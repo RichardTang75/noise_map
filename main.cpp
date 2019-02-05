@@ -11,12 +11,12 @@
 #include "test_funcs.hpp"
 #include "3rd party libs/FastNoise/FastNoise.h"
 #include "3rd party libs/poisson-disk-generator/PoissonGenerator.h"
-#include "3rd party libs/delaunay-triangulation/delaunay.h"
 #include "3rd party libs/ThreadPool/ThreadPool.h"
 #include <unordered_set>
 #include <unordered_map>
 #include <random>
 #include <queue>
+#include "river_creation.hpp"
 
 struct coordinate
 {
@@ -35,41 +35,6 @@ struct coordinate
     };
 };
 
-struct coord_edge
-{
-    coordinate p1;
-    coordinate p2;
-};
-
-
-struct line
-{
-    coordinate point;
-    int dx;
-    int dy;
-};
-
-//thanks wikipedia!
-coordinate intersect(line& i, line& j)
-{
-    coordinate intersection {-1, -1};
-    coordinate i1 = i.point;
-    coordinate j1 = j.point;
-    coordinate i2 {i.point.x+i.dx, i.point.y+i.dy};
-    coordinate j2 {j.point.x+j.dx, j.point.y+j.dy};
-    int big_det = (i1.x-i2.x)*(j1.x-j2.x) - (i1.y-i2.y)*(j1.x-j2.x);
-    if (big_det==0)
-    {
-        return intersection;
-    }
-    int det_i =(i1.x*i2.y-i1.y*i2.x);
-    int det_j =(j1.x*j2.y-j1.y*j2.x);
-    intersection.x=(det_i*(j1.x-j2.x) - (i1.x-i2.x)*det_j)/big_det;
-    intersection.y=(det_i*(j1.y-j2.y) - (i1.y-i2.y)*det_j)/big_det;
-    return intersection;
-}
-
-
 struct city_candidate
 {
     coordinate location;
@@ -82,11 +47,18 @@ struct city_and_nearby
     std::vector<coordinate> nearby;
 };
 
-
 struct bounds
 {
     coordinate start;
     double radius;
+};
+
+struct city_flood_fill
+{
+    coordinate city_start;
+    int number;
+    std::unordered_map<coordinate, int, coordinate::hash> flood_fill;
+    double max_rad; //purely for the second pass.
 };
 
 struct flood_fill_unit
@@ -103,68 +75,19 @@ struct compare_flood_fill_units
     }
 };
 
-
-
-struct city_flood_fill
-{
-    coordinate city_start;
-    int number;
-    std::unordered_map<coordinate, int, coordinate::hash> flood_fill;
-};
-
-
 bool compare_city_candidates(city_candidate& i, city_candidate& j)
 {
     return i.score > j.score;
 }
-struct delaunay_point_hasher
-{
-    std::size_t operator()(Vector2<double> const& e) const
-    {
-        return e.x*53 + e.y*31;
-    }
-};
-struct edge_hasher
-{
-    std::size_t operator()(Edge<double> const& e) const
-    {
-        return (e.p1.x*53 + e.p1.y*31 + e.p2.x*53 + e.p2.y*31);
-    }
-};
+
 
 double dist_squared(int x1, int y1, int x2, int y2)
 {
     return pow((x2 - x1), 2) + pow((y2 - y1), 2);
 }
 
-//should redo this to ensure no doubles, use unordered set.
-struct edge_information
-{
-    int edge_index;
-    double edge_probability;
-    bool on_coast;
-};
 
-bool compare_edge_probabilities(edge_information& i, edge_information& j)
-{
-    return i.edge_probability > j.edge_probability;
-}
 
-struct point_and_edges
-{
-    Vector2<double> point;
-    std::vector<edge_information> edge_and_probabilities;
-};
-
-bool about_equal(double in1, double in2)
-{
-    double delta = in2-in1;
-    if (abs(delta)<.00001)
-    {
-        return true;
-    }
-    return false;
-}
 void draw_line(std::vector<std::vector<double>>& in, int startx, int starty, int endx, int endy)
 {
     int dx = endx - startx;
@@ -400,129 +323,6 @@ void find_max_min_vectormap(std::vector<std::vector<double>>& vectormap, double&
     max = absolute_max;
 }
 
-std::vector<int> find_edges_involving_point(std::vector<Edge<double>>& edges, Vector2<double>& point)
-{
-    std::vector<int> to_return_indices;
-    for (int i=0; i<edges.size(); i++)
-    {
-        Edge<double> checkin = edges[i];
-        if ((checkin.p1 == point) || (checkin.p2 == point))
-        {
-            to_return_indices.push_back(i);
-        }
-    }
-    return to_return_indices;
-}
-
-std::vector<edge_information> find_edges_involving_point(std::vector<Edge<double>>& edges, Vector2<double>& point, std::vector<std::vector<double>>& ridge_vectormap, double absolute_min, double absolute_max)
-{
-    //returns empty vector to show that it's in the closed set already
-    double normalized_start_elev = (ridge_vectormap[int(point.x)][int(point.y)]-absolute_min)/(absolute_max-absolute_min);
-    bool all_water=false;
-    bool water_start = false;
-    if (normalized_start_elev<.4)
-    {
-        all_water=true;
-        water_start=true;
-    }
-    std::vector<edge_information> to_return;
-    std::vector<edge_information> empty_vector;
-    for (int i=0; i<edges.size(); i++)
-    {
-        edge_information temp;
-        temp.edge_index=i;
-        Edge<double> checkin = edges[i];
-        double normalized_end_elev;
-        if ((checkin.p1 == point) || (checkin.p2 == point))
-        {
-            if (checkin.p1 == point)
-            {
-                normalized_end_elev = (ridge_vectormap[int(checkin.p2.x)][int(checkin.p2.y)]-absolute_min)/(absolute_max-absolute_min);
-            }
-            else
-            {
-                normalized_end_elev = (ridge_vectormap[int(checkin.p1.x)][int(checkin.p1.y)]-absolute_min)/(absolute_max-absolute_min);
-
-            }
-            if (normalized_end_elev > .4)
-            {
-                all_water=false;
-                temp.on_coast=false;
-                if (water_start)
-                {
-                    temp.on_coast = true;
-                }
-                double change_in_elev = normalized_start_elev-normalized_end_elev; //want to go upwards
-                //std::cout << change_in_elev <<"\n";
-                temp.edge_probability=change_in_elev;
-                to_return.push_back(temp);
-            }
-        }
-    }
-    if (all_water){return empty_vector;}
-    return to_return;
-}
-
-//always head for the sea? find closest edge, change prob to encourage
-void get_to_draw (std::vector<edge_information>& edge_indices_and_probs, std::vector<Edge<double>>& all_edges,
-                        std::unordered_set<Edge<double>, edge_hasher>& chosen_to_draw)
-{
-    if (edge_indices_and_probs.size()==0)
-    {
-        return;
-    }
-    std::sort(edge_indices_and_probs.begin(), edge_indices_and_probs.end(), compare_edge_probabilities);
-    double largest_probability=edge_indices_and_probs.front().edge_probability;
-    int stored_sorted_index_cut_off=edge_indices_and_probs.size();
-    for (int i=0; i<edge_indices_and_probs.size(); i++)
-    {
-        if (edge_indices_and_probs[i].edge_probability<largest_probability)
-        {
-            stored_sorted_index_cut_off=i;
-            break;
-        }
-    }
-    std::vector<int> edge_indices_plausible;
-    for (int i=0; i<stored_sorted_index_cut_off; i++)
-    {
-        if (chosen_to_draw.count(all_edges[edge_indices_and_probs[i].edge_index]) == 0)
-            //don't want two points to only be connected to each other
-        {
-            edge_indices_plausible.push_back(edge_indices_and_probs[i].edge_index);
-        }
-    }
-    while (edge_indices_plausible.size()==0)
-    {
-        largest_probability=edge_indices_and_probs[stored_sorted_index_cut_off].edge_probability;
-        for (int i=stored_sorted_index_cut_off; i<edge_indices_and_probs.size(); i++)
-        {
-            if (edge_indices_and_probs[i].edge_probability<largest_probability)
-            {
-                stored_sorted_index_cut_off=i;
-                break;
-            }
-        }
-        for (int i=0; i<stored_sorted_index_cut_off; i++)
-        {
-            if (chosen_to_draw.count(all_edges[edge_indices_and_probs[i].edge_index]) == 0)
-            {
-                edge_indices_plausible.push_back(edge_indices_and_probs[i].edge_index);
-            }
-        }
-        if (largest_probability == 0 || largest_probability==edge_indices_and_probs.back().edge_probability || stored_sorted_index_cut_off == edge_indices_and_probs.size())
-        {
-            break;
-        }
-    }
-    int how_many_shuffles = std::min(int(edge_indices_plausible.size()), 1);
-    for (int i=0; i<how_many_shuffles; i++)
-    {
-        std::random_shuffle(edge_indices_plausible.begin(), edge_indices_plausible.end());
-        chosen_to_draw.emplace(all_edges[edge_indices_plausible.back()]);
-        edge_indices_plausible.pop_back();
-    }
-}
-
 
 void get_edges_to_draw(std::vector<Edge<double>>& edges, std::unordered_set<Edge<double>, edge_hasher>& edges_to_draw,
                        std::vector<std::vector<double>>& ridge_vectormap, double absolute_min, double absolute_max)
@@ -578,11 +378,104 @@ double get_raycast_max_radius(Vector2<double>& city, std::vector<Edge<double>>& 
     return max_dist_squared;
 }
 
+std::unordered_set<coordinate, coordinate::hash> second_flood_fill_consolidation (city_flood_fill& original, std::vector<std::vector<double>>& political_map,
+                                                std::vector<std::vector<double>>& elevation_map, double elevation_min,
+                                                 double elevation_range, int num_rows, int num_cols)
+{
+    std::priority_queue<flood_fill_unit, std::vector<flood_fill_unit>, compare_flood_fill_units> possible;
+    std::vector<coordinate> directions =
+    {
+        coordinate{0, -1},
+        coordinate{-1, 0},                      coordinate{1, 0},
+        coordinate{0, 1}
+    };
+    flood_fill_unit temp{original.city_start, 0, 0};
+    possible.push(temp);
+    std::unordered_set<coordinate, coordinate::hash> visited;
+    std::unordered_set<coordinate, coordinate::hash> in_queue;
+    while (possible.size()>0)
+    {
+        flood_fill_unit current = possible.top();
+        possible.pop();
+        visited.emplace(current.location);
+        for (coordinate dir : directions)
+        {
+            coordinate next = coordinate{current.location.x+dir.x, current.location.y+dir.y};
+            double normalized = (elevation_map[next.x][next.y]-elevation_min)/elevation_range;
+            if (dist_squared(next.x, next.y, original.city_start.x, original.city_start.y)< original.max_rad &&
+                next.x > 0 && next.x < num_cols && next.y >0 && next.y < num_rows &&
+                visited.count(next) == 0 && in_queue.count(next) == 0 && political_map[next.x][next.y] == original.number)
+            {
+                if (normalized > .4 || normalized == 0)
+                {
+                    possible.push(flood_fill_unit{next, 0, current.manhattan_dist+1});
+                    in_queue.emplace(next);
+                }
+            }
+        }
+    }
+    return visited;
+}
+
+city_flood_fill third_flood_fill_gaps (city_flood_fill& original, std::unordered_set<coordinate, coordinate::hash>& contiguous_area,
+                                       std::vector<std::vector<double>>& political_map, std::vector<std::vector<double>>& elevation_map,
+                                       double elevation_min, double elevation_range, int num_rows, int num_cols)
+{
+    city_flood_fill to_return;
+    to_return.city_start = original.city_start;
+    to_return.number = original.number;
+    to_return.max_rad = original.max_rad;
+    std::unordered_map<coordinate, int, coordinate::hash> costs;
+    std::priority_queue<flood_fill_unit, std::vector<flood_fill_unit>, compare_flood_fill_units> possible;
+    std::vector<coordinate> directions =
+    {
+        coordinate{0, -1},
+        coordinate{-1, 0},                      coordinate{1, 0},
+        coordinate{0, 1}
+    };
+    flood_fill_unit temp{original.city_start, 0, 0};
+    possible.push(temp);
+    costs[temp.location] = temp.cost;
+    std::unordered_set<coordinate, coordinate::hash> visited;
+    std::unordered_set<coordinate, coordinate::hash> in_queue;
+    while (possible.size()>0)
+    {
+        flood_fill_unit current = possible.top();
+        possible.pop();
+        to_return.flood_fill[current.location] = current.cost;
+        visited.emplace(current.location);
+        for (coordinate dir : directions)
+        {
+            coordinate next = coordinate{current.location.x+dir.x, current.location.y+dir.y};
+            double normalized = (elevation_map[next.x][next.y]-elevation_min)/elevation_range;
+            if (dist_squared(next.x, next.y, original.city_start.x, original.city_start.y)< original.max_rad &&
+                next.x > 0 && next.x < num_cols && next.y >0 && next.y < num_rows &&
+                visited.count(next) == 0 && in_queue.count(next) == 0)
+            {
+                if (normalized > .4 || normalized == 0)
+                {
+                    if (contiguous_area.count(next)>0)
+                    {
+                        possible.push(flood_fill_unit{next, 0, current.manhattan_dist+1});
+                    }
+                    else
+                    {
+                        possible.push(flood_fill_unit{next, current.cost+1, current.manhattan_dist+1});
+                    }
+                    in_queue.emplace(next);
+                }
+            }
+        }
+    }
+    return to_return;
+}
+
 city_flood_fill flood_fill_this_city (coordinate& location, double& max_rad_square, int number, std::vector<std::vector<double>>& map, double absolute_min, double absolute_range, int num_rows, int num_cols)
 {
     city_flood_fill to_return;
     to_return.city_start = location;
     to_return.number = number;
+    to_return.max_rad = max_rad_square;
     std::unordered_map<coordinate, int, coordinate::hash> costs;
     std::vector<double> column(num_rows, 0);
     std::vector<std::vector<double>> what(num_cols, column);
@@ -685,6 +578,36 @@ std::vector<city_candidate> rate_candidates(std::vector<coordinate>& poisson_cit
         }
     }
     return candidates;
+}
+
+void fill_vectormap_with_cheapest(std::vector<std::vector<double>>& provincial_vectormap,
+                                  std::vector<city_flood_fill>& city_flood_fills_for_provinces)
+{
+    for (int i=0; i<provincial_vectormap.size(); i++)
+    {
+        for (int j=0; j<provincial_vectormap[0].size(); j++)
+        {
+            int lowest_cost = -1;
+            int lowest_number=11;
+            for (city_flood_fill& fill_n_cost : city_flood_fills_for_provinces)
+            {
+                if (fill_n_cost.flood_fill.count(coordinate{i, j}) > 0 )
+                {
+                    if (lowest_cost==-1)
+                    {
+                        lowest_cost = fill_n_cost.flood_fill[coordinate{i,j}];
+                        lowest_number = fill_n_cost.number;
+                    }
+                    else if (lowest_cost > fill_n_cost.flood_fill[coordinate{i,j}])
+                    {
+                        lowest_cost = fill_n_cost.flood_fill[coordinate{i,j}];
+                        lowest_number = fill_n_cost.number;
+                    }
+                }
+            }
+            provincial_vectormap[i][j] = double(lowest_number);
+        }
+    }
 }
 void urquhart_graph(std::vector<Triangle<double>>& city_triangles, std::unordered_set<Edge<double>, edge_hasher>& city_connections_not_draw)
 {
@@ -884,40 +807,24 @@ int main(int argc, const char * argv[])
         city_flood_fills_for_provinces.push_back(flood_fill_this_city(chosen.location, max_rad_squared, number, ridge_vectormap, absolute_min, absolute_range, num_rows, num_columns));
         number+=1;
     }
-    for (int i=0; i<provincial_vectormap.size(); i++)
+    fill_vectormap_with_cheapest(provincial_vectormap, city_flood_fills_for_provinces);
+    std::vector<city_flood_fill> finished_flood_fills;
+    for (city_flood_fill& second_pass : city_flood_fills_for_provinces)
     {
-        for (int j=0; j<provincial_vectormap[0].size(); j++)
-        {
-            int lowest_cost = -1;
-            int lowest_number=100;
-            for (city_flood_fill& fill_n_cost : city_flood_fills_for_provinces)
-            {
-                if (fill_n_cost.flood_fill.count(coordinate{i, j}) > 0 )
-                {
-                    if (lowest_cost==-1)
-                    {
-                        lowest_cost = fill_n_cost.flood_fill[coordinate{i,j}];
-                        lowest_number = fill_n_cost.number;
-                    }
-                    else if (lowest_cost > fill_n_cost.flood_fill[coordinate{i,j}])
-                    {
-                        lowest_cost = fill_n_cost.flood_fill[coordinate{i,j}];
-                        lowest_number = fill_n_cost.number;
-                    }
-                }
-            }
-            provincial_vectormap[i][j] = double(lowest_number)/10;
-        }
+        std::unordered_set<coordinate, coordinate::hash> contiguous = second_flood_fill_consolidation(second_pass, provincial_vectormap, ridge_vectormap, absolute_min, absolute_range, num_rows, num_columns);
+        finished_flood_fills.push_back(third_flood_fill_gaps(second_pass, contiguous, provincial_vectormap, ridge_vectormap, absolute_min, absolute_range, num_rows, num_columns));
     }
-    double moisture_min;
-    double moisture_max;
+    fill_vectormap_with_cheapest(provincial_vectormap, finished_flood_fills);
+    double moisture_min, moisture_max;
     find_max_min_vectormap(moisture_vectormap, moisture_min, moisture_max);
     find_max_min_vectormap(temperature_vectormap, temperature_min, temperature_max);
 //    checkthis(ridge_vectormap, num_rows, num_columns, "ayoo8.png", absolute_min, absolute_max);
 //    checkthis(moisture_vectormap, num_rows, num_columns, "ayoo1.png", moisture_min, moisture_max);
 //    checkthis(temperature_vectormap, num_rows, num_columns, "ayoo2.png", temperature_min, temperature_max);
     checkthis(poisson_vectormap, num_rows, num_columns, "ayoo7.png", 0, 1);
-    checkthis(provincial_vectormap, num_rows, num_columns, "ayoo9.png", 0, 1);
+    double provincial_min, provincial_max;
+    find_max_min_vectormap(provincial_vectormap, provincial_min, provincial_max);
+    checkthis(provincial_vectormap, num_rows, num_columns, "ayoo9.png", provincial_min, provincial_max);
     find_max_min_vectormap(ridge_vectormap, absolute_min, absolute_max);
     std::cout<<absolute_min<<","<<absolute_max<<"\n";
     temperature_vectormap[5][12]=5;
