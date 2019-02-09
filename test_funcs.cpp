@@ -40,24 +40,24 @@ void array_img(std::vector<std::vector<double>>& array, std::vector<unsigned cha
 //                green=0;
 //                blue=0;
 //            }
-//            if (normalized<.4)
-//            {
-//                red = 55+25*normalized;
-//                green = 33+17*normalized;
-//                blue = 230 + 25*normalized; //230-60
-//            }
-//            else if (normalized<.65)
-//            {
-//                blue = 25*normalized;
-//                red=25*normalized;
-//                green=170+25*normalized;
-//            }
-//            else if (normalized<.85)
-//            {
-//                red = 70*normalized;
-//                blue = 10*normalized;
-//                green = 90*normalized;
-//            }
+            if (normalized<.4)
+            {
+                red = 55+25*normalized;
+                green = 33+17*normalized;
+                blue = 230 + 25*normalized; //230-60
+            }
+            else if (normalized<.65)
+            {
+                blue = 25*normalized;
+                red=25*normalized;
+                green=170+25*normalized;
+            }
+            else if (normalized<.85)
+            {
+                red = 70*normalized;
+                blue = 10*normalized;
+                green = 90*normalized;
+            }
             img[4 * row*cols + 4 * col] = red;
             img[4 * row*cols + 4 * col + 1] = green;
             img[4 * row*cols + 4 * col + 2] = blue;

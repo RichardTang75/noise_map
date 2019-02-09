@@ -98,44 +98,11 @@ void draw_line(std::vector<std::vector<double>>& in, int startx, int starty, int
     if (abs(dx)>abs(dy))
     {
         step =dx/abs(dx);
-        for (int i=1; i<abs(dx); i++)
-        {
-            next_x=i*step+startx;
-            next_y=starty+i*dy/abs(dx);
-            in[next_x][next_y]=.25;
-        }
-    }
-    else
-    {
-        step = dy/abs(dy);
-        for (int i=1; i<abs(dy); i++)
-        {
-            next_x=startx+i*dx/abs(dy);
-            next_y=i*step+starty;
-            in[next_x][next_y]=.25;
-        }
-    }
-}
-void draw_line(std::vector<std::vector<double>>& in, double min, double max, int startx, int starty, int endx, int endy)
-{
-    int dx = endx - startx;
-    int dy = endy - starty;
-    int step;
-    int next_x;
-    int next_y;
-    double normalized = 0;
-    if (abs(dx)>abs(dy))
-    {
-        step =dx/abs(dx);
         for (int i=0; i<abs(dx); i++)
         {
             next_x=i*step+startx;
             next_y=starty+i*dy/abs(dx);
-            normalized = (in[next_x][next_y] - min) / (max-min);
-            if (normalized>.4)
-            {
-                in[next_x][next_y]=min;
-            }
+            in[next_x][next_y]=.25;
         }
     }
     else
@@ -145,11 +112,95 @@ void draw_line(std::vector<std::vector<double>>& in, double min, double max, int
         {
             next_x=startx+i*dx/abs(dy);
             next_y=i*step+starty;
-            normalized = (in[next_x][next_y] - min) / (max-min);
-            if (normalized>.4)
-            {
-                in[next_x][next_y]=min;
-            }
+            in[next_x][next_y]=.25;
+        }
+    }
+}
+//void draw_line(std::vector<std::vector<double>>& in, double min, double max, int startx, int starty, int endx, int endy)
+//{
+//    int dx = endx - startx;
+//    int dy = endy - starty;
+//    int step;
+//    int next_x;
+//    int next_y;
+//    double normalized = 0;
+//    if (abs(dx)>abs(dy))
+//    {
+//        step =dx/abs(dx);
+//        for (int i=0; i<abs(dx); i++)
+//        {
+//            next_x=i*step+startx;
+//            next_y=starty+i*dy/abs(dx);
+//            normalized = (in[next_x][next_y] - min) / (max-min);
+//            if (normalized>.4)
+//            {
+//                in[next_x][next_y]=min;
+//            }
+//        }
+//    }
+//    else
+//    {
+//        step = dy/abs(dy);
+//        for (int i=0; i<abs(dy); i++)
+//        {
+//            next_x=startx+i*dx/abs(dy);
+//            next_y=i*step+starty;
+//            normalized = (in[next_x][next_y] - min) / (max-min);
+//            if (normalized>.4)
+//            {
+//                in[next_x][next_y]=min;
+//            }
+//        }
+//    }
+//}
+//based off of http://members.chello.at/easyfilter/bresenham.html
+void draw_line(std::vector<std::vector<double>>& in, double min, double max, int startx, int starty, int endx, int endy)
+{
+    int dx = abs(endx-startx);
+    int dy = -abs(endy-starty);
+    int stepx, stepy;
+    if (endx>startx)
+    {
+        stepx=1;
+    }
+    else
+    {
+        stepx=-1;
+    }
+    if (endy>starty)
+    {
+        stepy=1;
+    }
+    else
+    {
+        stepy=-1;
+    }
+    int err = dx+dy;
+    int twice_err;
+    int next_x = startx;
+    int next_y = starty;
+    double normalized;
+    while (true)
+    {
+        normalized = (in[next_x][next_y] - min) / (max-min);
+        if (normalized>.4)
+        {
+            in[next_x][next_y]=min;
+        }
+        if (next_x == endx && next_y == endy)
+        {
+            break;
+        }
+        twice_err = 2*err;
+        if (twice_err >= dy)
+        {
+            err+=dy;
+            next_x+=stepx;
+        }
+        if (twice_err<=dx)
+        {
+            err+=dx;
+            next_y+=stepy;
         }
     }
 }
@@ -323,24 +374,36 @@ void find_max_min_vectormap(std::vector<std::vector<double>>& vectormap, double&
     max = absolute_max;
 }
 
-
+//find all points_and_edges, separate the ones that are plausible, iterate through points
 void get_edges_to_draw(std::vector<Edge<double>>& edges, std::unordered_set<Edge<double>, edge_hasher>& edges_to_draw,
-                       std::vector<std::vector<double>>& ridge_vectormap, double absolute_min, double absolute_max)
+                       std::vector<std::vector<double>>& ridge_vectormap, double absolute_min, double absolute_range)
 {
     std::unordered_set<Vector2<double>, delaunay_point_hasher> visited_points;
-    std::unordered_map<coordinate, point_and_edges, coordinate::hash> points_n_connections;
+    std::unordered_map<Vector2<double>, point_and_edges, delaunay_point_hasher> points_n_connections;
     for (Edge<double> edge :  edges)
     {
         if (visited_points.count(edge.p1)==0)
         {
-            point_and_edges temp;
-            temp.point = edge.p1;
-            double normalized_start_elev = (ridge_vectormap[int(temp.point.x)][int(temp.point.y)]-absolute_min)/(absolute_max-absolute_min);
-            temp.edge_and_probabilities = find_edges_involving_point(edges, temp.point, ridge_vectormap, absolute_min, absolute_max);
-            get_to_draw(temp.edge_and_probabilities, edges, edges_to_draw);
+            point_and_edges temp = find_edges_involving_point(edges, edge.p1, ridge_vectormap, absolute_min, absolute_range);
+            points_n_connections[temp.point] = temp;
             visited_points.emplace(edge.p1);
         }
     }
+    std::unordered_map<Vector2<double>, point_and_edges, delaunay_point_hasher> coast_points;
+    std::unordered_map<Vector2<double>, point_and_edges, delaunay_point_hasher> land_points;
+    for (auto point : points_n_connections)
+    {
+        if (point.second.coastal)
+        {
+            coast_points[point.first] = point.second;
+        }
+        else if ((ridge_vectormap[int(point.first.x)][int(point.first.y)]-absolute_min)/(absolute_range) > .4)
+        {
+            land_points[point.first] = point.second;
+        }
+    }
+    get_to_draw(coast_points, land_points, edges, edges_to_draw);
+    //get_to_draw(temp.edge_and_probabilities, edges, edges_to_draw);
 }
 
 city_and_nearby get_nearby_cities(Vector2<double>& city_loc, std::vector<Edge<double>>& connections)
@@ -700,7 +763,7 @@ int main(int argc, const char * argv[])
     double temperature_range = .8*(temperature_max-temperature_min);
     double oceanic_cooling_power = temperature_range/8; //do i really want to do this, probably not
     PoissonGenerator::DefaultPRNG some_generator = PoissonGenerator::DefaultPRNG(58);
-    int num_points_desired = num_rows/16 * num_columns / 16;
+    int num_points_desired = num_rows/8 * num_columns / 8;
     double width_to_height_ratio = double(num_columns)/double(num_rows);
     std::vector<PoissonGenerator::sPoint> poisson_points = PoissonGenerator::GeneratePoissonPoints(num_points_desired, some_generator, width_to_height_ratio, 30, false);
     std::vector<Vector2<double>> poisson_delaunay_points;
@@ -717,8 +780,8 @@ int main(int argc, const char * argv[])
     std::vector<Edge<double> > edges = triangulation.getEdges();
     std::unordered_set<Edge<double>, edge_hasher> edges_to_draw;
     std::future<void> please_save_time;
-    please_save_time = pool.enqueue(get_edges_to_draw, std::ref(edges), std::ref(edges_to_draw), std::ref(ridge_vectormap), absolute_min, absolute_max);
-    please_save_time.get(); //i swear i will actually make this save time when I finish the province stuff
+    please_save_time = pool.enqueue(get_edges_to_draw, std::ref(edges), std::ref(edges_to_draw), std::ref(ridge_vectormap), absolute_min, absolute_range);
+    please_save_time.get(); //i swear i will actually make this save time when I clean it all up
     for (Edge<double> edge_to_draw : edges_to_draw)
     {
         draw_line(poisson_vectormap, int(edge_to_draw.p1.x), int(edge_to_draw.p1.y),
@@ -791,14 +854,13 @@ int main(int argc, const char * argv[])
     }
     std::unordered_set<Edge<double>, edge_hasher> city_connections_not_draw;
     urquhart_graph(city_triangles, city_connections_not_draw);
-    for (Edge<double> city_edge : city_edges)
-    {
-        if (city_connections_not_draw.count(city_edge) == 0)
-        {
-            draw_line(poisson_vectormap, city_edge.p1.x, city_edge.p1.y, city_edge.p2.x, city_edge.p2.y);
-        }
-        draw_line(poisson_vectormap, city_edge.p1.x, city_edge.p1.y, city_edge.p2.x, city_edge.p2.y);
-    }
+//    for (Edge<double> city_edge : city_edges)
+//    {
+//        if (city_connections_not_draw.count(city_edge) == 0)
+//        {
+//            draw_line(poisson_vectormap, city_edge.p1.x, city_edge.p1.y, city_edge.p2.x, city_edge.p2.y);
+//        }
+//    }
     std::vector<city_flood_fill> city_flood_fills_for_provinces;
     int number = 0;
     for (city_candidate chosen: chosen_candidates)
@@ -815,13 +877,21 @@ int main(int argc, const char * argv[])
         finished_flood_fills.push_back(third_flood_fill_gaps(second_pass, contiguous, provincial_vectormap, ridge_vectormap, absolute_min, absolute_range, num_rows, num_columns));
     }
     fill_vectormap_with_cheapest(provincial_vectormap, finished_flood_fills);
+    for (Edge<double> city_edge : city_edges)
+    {
+        if (city_connections_not_draw.count(city_edge) == 0)
+        {
+            draw_line(provincial_vectormap, 0, 1, city_edge.p1.x, city_edge.p1.y, city_edge.p2.x, city_edge.p2.y);
+        }
+    }
+
     double moisture_min, moisture_max;
     find_max_min_vectormap(moisture_vectormap, moisture_min, moisture_max);
     find_max_min_vectormap(temperature_vectormap, temperature_min, temperature_max);
-//    checkthis(ridge_vectormap, num_rows, num_columns, "ayoo8.png", absolute_min, absolute_max);
+//    checkthis(ridge_vectormap, num_rows, num_columns, "ayoo11.png", absolute_min, absolute_max);
 //    checkthis(moisture_vectormap, num_rows, num_columns, "ayoo1.png", moisture_min, moisture_max);
 //    checkthis(temperature_vectormap, num_rows, num_columns, "ayoo2.png", temperature_min, temperature_max);
-    checkthis(poisson_vectormap, num_rows, num_columns, "ayoo7.png", 0, 1);
+    checkthis(poisson_vectormap, num_rows, num_columns, "ayoo12.png", 0, 1);
     double provincial_min, provincial_max;
     find_max_min_vectormap(provincial_vectormap, provincial_min, provincial_max);
     checkthis(provincial_vectormap, num_rows, num_columns, "ayoo9.png", provincial_min, provincial_max);
