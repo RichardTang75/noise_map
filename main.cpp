@@ -12,11 +12,16 @@
 #include "3rd party libs/FastNoise/FastNoise.h"
 #include "3rd party libs/poisson-disk-generator/PoissonGenerator.h"
 #include "3rd party libs/ThreadPool/ThreadPool.h"
+#include "3rd party libs/json/json.hpp"
 #include <unordered_set>
 #include <unordered_map>
 #include <random>
 #include <queue>
+#include <fstream>
 #include "river_creation.hpp"
+
+enum class direction {north, south, east, west};
+
 
 struct coordinate
 {
@@ -326,7 +331,7 @@ void get_noise_maps(std::vector<std::vector<double>>& ridge_vectormap, std::vect
     FastNoise moisture;
     moisture.SetSeed(8743);
     moisture.SetNoiseType(FastNoise::SimplexFractal);
-    moisture.SetFrequency(.003);
+    moisture.SetFrequency(.007);
     ridges.SetGradientPerturbAmp(30);
     FastNoise temperature;
     temperature.SetSeed(2309);
@@ -704,6 +709,120 @@ void urquhart_graph(std::vector<Triangle<double>>& city_triangles, std::unordere
         }
     }
 }
+
+void drop (double& normalized, double& current_carrying, double& carrying_capacity, double& pickup_perc,
+           double& perc_drop, double& min_drop_perc, int& current_x, int& current_y, std::vector<std::vector<double>>& to_effect)
+{
+    if (normalized < .4)
+    {
+        if (current_carrying < carrying_capacity)
+        {
+            current_carrying += pickup_perc*carrying_capacity; //make moisture here max? doesn't really matter, it's water anyways
+            if (current_carrying > carrying_capacity)
+            {
+                current_carrying = carrying_capacity;
+            }
+        }
+        /*                                              _________________________                                                   */
+        /*                                              _________________________                                                   */
+        /*                                              _________________________                                                   */
+        /*                                              _________________________                                                   */
+        to_effect[current_x][current_y] = 2;
+        /*                                              _________________________                                                   */
+        /*                                              _________________________                                                   */
+        /*                                              _________________________                                                   */
+        /*                                              _________________________                                                   */
+
+    }
+    else
+    {
+        double drop_amount = 0;
+        if (current_carrying>0)
+        {
+            if (current_carrying*perc_drop > min_drop_perc*carrying_capacity)
+            {
+                drop_amount = current_carrying*perc_drop;
+            }
+            else if (current_carrying > min_drop_perc*carrying_capacity)
+            {
+                drop_amount = min_drop_perc*carrying_capacity;
+            }
+            else
+            {
+                drop_amount = current_carrying;
+            }
+            current_carrying -= drop_amount;
+        }
+        to_effect[current_x][current_y] += drop_amount;
+    }
+}
+
+void wind_effects (double carrying_capacity, double perc_drop, double pickup_perc, double min_drop_perc, direction wind_direction,
+                   std::vector<std::vector<double>>& elevations, std::vector<std::vector<double>>& to_effect,
+                   double absolute_min, double absolute_range)
+{
+    int current_x, current_y;
+    if (wind_direction == direction::north || wind_direction == direction::south)
+    {
+        for (int i=0; i<elevations.size(); i++)
+        {
+            double current_carrying = 0;
+            current_x = i;
+            for (int j=0; j<elevations[0].size(); j++)
+            {
+                if (wind_direction == direction::north)
+                {
+                    current_y = j;
+                }
+                else
+                {
+                    current_y = elevations[0].size()-1-j;
+                }
+                double normalized = (elevations[current_x][current_y]-absolute_min)/absolute_range;
+                drop(normalized, current_carrying, carrying_capacity, pickup_perc, perc_drop, min_drop_perc, current_x, current_y, to_effect);
+            }
+        }
+    }
+    else
+    {
+        for (int j=0; j<elevations[0].size(); j++)
+        {
+            double current_carrying = 0;
+            current_y = j;
+            for (int i=0; i<elevations.size(); i++)
+            {
+                if (wind_direction == direction::east)
+                {
+                    current_x = elevations.size()-1-i;
+                }
+                else
+                {
+                    current_x = i;
+                }
+                double normalized = (elevations[current_x][current_y]-absolute_min)/absolute_range;
+                drop(normalized, current_carrying, carrying_capacity, pickup_perc, perc_drop, min_drop_perc, current_x, current_y, to_effect);
+            }
+        }
+    }
+}
+nlohmann::json convert_vectormap(std::vector<std::vector<double>>& in)
+{
+    nlohmann::json equiv_vectormap;
+    for (std::vector<double>& column: in)
+    {
+        nlohmann::json json_col(column);
+        equiv_vectormap.push_back(json_col);
+    }
+    return equiv_vectormap;
+}
+
+std::vector<std::vector<double>> convert_json(nlohmann::json& in)
+{
+    std::vector<std::vector<double>> to_return;
+    to_return = in.get<std::vector<std::vector<double>>>();
+    return to_return;
+}
+
 int main(int argc, const char * argv[])
 {
     int hard_conc = 1.5 * std::thread::hardware_concurrency();
@@ -712,6 +831,15 @@ int main(int argc, const char * argv[])
         hard_conc=3;
     }
     ThreadPool pool(hard_conc);
+    
+    bool generate_new_map = true;
+    std::ifstream injson("elevations.json");
+    nlohmann::json elevation_json;
+    if (injson.good())
+    {
+        generate_new_map=false;
+        injson >> elevation_json;
+    }
     
     int num_rows = 512; //1536;
     int num_columns = 512; //2560;
@@ -763,32 +891,36 @@ int main(int argc, const char * argv[])
     double temperature_range = .8*(temperature_max-temperature_min);
     double oceanic_cooling_power = temperature_range/8; //do i really want to do this, probably not
     PoissonGenerator::DefaultPRNG some_generator = PoissonGenerator::DefaultPRNG(58);
-    int num_points_desired = num_rows/8 * num_columns / 8;
     double width_to_height_ratio = double(num_columns)/double(num_rows);
-    std::vector<PoissonGenerator::sPoint> poisson_points = PoissonGenerator::GeneratePoissonPoints(num_points_desired, some_generator, width_to_height_ratio, 30, false);
-    std::vector<Vector2<double>> poisson_delaunay_points;
-    for (auto i=poisson_points.begin(); i!=poisson_points.end(); i++)
+    if (generate_new_map)
     {
-        int x_value = i->x*num_columns;
-        int y_value = i->y*num_rows;
-        poisson_delaunay_points.push_back(Vector2<double>(x_value, y_value));
-        poisson_vectormap[x_value][y_value] = .5;
+        int num_points_desired = num_rows/4 * num_columns / 4;
+        std::vector<PoissonGenerator::sPoint> poisson_points = PoissonGenerator::GeneratePoissonPoints(num_points_desired, some_generator, width_to_height_ratio, 30, false);
+        std::vector<Vector2<double>> poisson_delaunay_points;
+        for (auto i=poisson_points.begin(); i!=poisson_points.end(); i++)
+        {
+            int x_value = i->x*num_columns;
+            int y_value = i->y*num_rows;
+            poisson_delaunay_points.push_back(Vector2<double>(x_value, y_value));
+            poisson_vectormap[x_value][y_value] = .5;
+        }
+        Delaunay<double> triangulation;
+        std::vector<Triangle<double> > triangles = triangulation.triangulate(poisson_delaunay_points);
+        std::cout << triangles.size() << " triangles generated\n";
+        std::vector<Edge<double> > edges = triangulation.getEdges();
+        std::unordered_set<Edge<double>, edge_hasher> edges_to_draw;
+        std::future<void> please_save_time;
+        please_save_time = pool.enqueue(get_edges_to_draw, std::ref(edges), std::ref(edges_to_draw), std::ref(ridge_vectormap), absolute_min, absolute_range);
+        please_save_time.get(); //i swear i will actually make this save time when I clean it all up
+        for (Edge<double> edge_to_draw : edges_to_draw)
+        {
+            draw_line(poisson_vectormap, int(edge_to_draw.p1.x), int(edge_to_draw.p1.y),
+                      (edge_to_draw.p2.x), int(edge_to_draw.p2.y));
+            draw_line(ridge_vectormap, absolute_min, absolute_max, int(edge_to_draw.p1.x), int(edge_to_draw.p1.y),
+                      (edge_to_draw.p2.x), int(edge_to_draw.p2.y));
+        }
     }
-    Delaunay<double> triangulation;
-    std::vector<Triangle<double> > triangles = triangulation.triangulate(poisson_delaunay_points);
-    std::cout << triangles.size() << " triangles generated\n";
-    std::vector<Edge<double> > edges = triangulation.getEdges();
-    std::unordered_set<Edge<double>, edge_hasher> edges_to_draw;
-    std::future<void> please_save_time;
-    please_save_time = pool.enqueue(get_edges_to_draw, std::ref(edges), std::ref(edges_to_draw), std::ref(ridge_vectormap), absolute_min, absolute_range);
-    please_save_time.get(); //i swear i will actually make this save time when I clean it all up
-    for (Edge<double> edge_to_draw : edges_to_draw)
-    {
-        draw_line(poisson_vectormap, int(edge_to_draw.p1.x), int(edge_to_draw.p1.y),
-                                            (edge_to_draw.p2.x), int(edge_to_draw.p2.y));
-        draw_line(ridge_vectormap, absolute_min, absolute_max, int(edge_to_draw.p1.x), int(edge_to_draw.p1.y),
-                  (edge_to_draw.p2.x), int(edge_to_draw.p2.y));
-    }
+    ridge_vectormap = convert_json(elevation_json);
     for (int i=0; i<temperature_vectormap.size(); i++)
     {
         for (int j=0; j<temperature_vectormap[i].size(); j++)
@@ -799,8 +931,19 @@ int main(int argc, const char * argv[])
             {
                 temperature_vectormap[i][j]-=(normalized_elevation-.75)*1.5*temperature_range;
             }
+            else if (normalized_elevation<.4)
+            {
+                temperature_vectormap[i][j]-=.125*temperature_range;
+            }
         }
     }
+    double moisture_min, moisture_max;
+    find_max_min_vectormap(moisture_vectormap, moisture_min, moisture_max);
+    double moisture_range = moisture_max-moisture_min;
+    wind_effects(moisture_range*160, .01, .3, .001, direction::east, ridge_vectormap, moisture_vectormap, absolute_min, absolute_range);
+    wind_effects(moisture_range*80, .02, .15, .002, direction::west, ridge_vectormap, moisture_vectormap, absolute_min, absolute_range);
+    wind_effects(moisture_range*160, .01, .3, .001, direction::north, ridge_vectormap, moisture_vectormap, absolute_min, absolute_range);
+    wind_effects(moisture_range*80, .02, .15, .002, direction::south, ridge_vectormap, moisture_vectormap, absolute_min, absolute_range);
     PoissonGenerator::DefaultPRNG city_generator = PoissonGenerator::DefaultPRNG(85);
     int num_city_sampling = num_rows/16 * num_columns / 16;
     std::vector<PoissonGenerator::sPoint> city_points = PoissonGenerator::GeneratePoissonPoints(num_city_sampling, city_generator, width_to_height_ratio, 30, false);
@@ -884,21 +1027,20 @@ int main(int argc, const char * argv[])
             draw_line(provincial_vectormap, 0, 1, city_edge.p1.x, city_edge.p1.y, city_edge.p2.x, city_edge.p2.y);
         }
     }
-
-    double moisture_min, moisture_max;
-    find_max_min_vectormap(moisture_vectormap, moisture_min, moisture_max);
     find_max_min_vectormap(temperature_vectormap, temperature_min, temperature_max);
+    find_max_min_vectormap(moisture_vectormap, moisture_min, moisture_max);
 //    checkthis(ridge_vectormap, num_rows, num_columns, "ayoo11.png", absolute_min, absolute_max);
-//    checkthis(moisture_vectormap, num_rows, num_columns, "ayoo1.png", moisture_min, moisture_max);
-//    checkthis(temperature_vectormap, num_rows, num_columns, "ayoo2.png", temperature_min, temperature_max);
-    checkthis(poisson_vectormap, num_rows, num_columns, "ayoo12.png", 0, 1);
+    checkthis(moisture_vectormap, num_rows, num_columns, "ayoo1.png", moisture_min, moisture_max);
+    checkthis(temperature_vectormap, num_rows, num_columns, "ayoo2.png", temperature_min, temperature_max);
+//    checkthis(poisson_vectormap, num_rows, num_columns, "ayoo14.png", 0, 1);
     double provincial_min, provincial_max;
     find_max_min_vectormap(provincial_vectormap, provincial_min, provincial_max);
     checkthis(provincial_vectormap, num_rows, num_columns, "ayoo9.png", provincial_min, provincial_max);
     find_max_min_vectormap(ridge_vectormap, absolute_min, absolute_max);
     std::cout<<absolute_min<<","<<absolute_max<<"\n";
-    temperature_vectormap[5][12]=5;
-    std::cout << "Hello, World!\n";
+    nlohmann::json elevations = convert_vectormap(ridge_vectormap);
+    std::ofstream o("elevations.json");
+    o << elevations << std::endl;
     return 0;
 }
 

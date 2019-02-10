@@ -120,6 +120,7 @@ point_and_edges find_edges_involving_point(std::vector<Edge<double>>& edges, Vec
     return to_return;
 }
 
+//TODO: Add endorheic lakes to empty areas, expand size of existing lakes that get fed into
 void get_to_draw (std::unordered_map<Vector2<double>, point_and_edges, delaunay_point_hasher>& coastal_points,
                   std::unordered_map<Vector2<double>, point_and_edges, delaunay_point_hasher>& land_points,
                   std::vector<Edge<double>>& all_edges,
