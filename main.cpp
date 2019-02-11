@@ -6,6 +6,8 @@
 //  Copyright © 2019 asdfuiop. All rights reserved.
 //
 
+//idea for river generation comes from https://cartographersguild.com/showthread.php?t=26931
+
 #include <iostream>
 #include <vector>
 #include "test_funcs.hpp"
@@ -19,6 +21,11 @@
 #include <queue>
 #include <fstream>
 #include "river_creation.hpp"
+
+//rivers -color, lakes-color, oceans-color
+//normals - desert, scrub, tundra, boreal, temperate, tropical
+//highlands, desert, temperate, boreal, tundra, wet
+//mountains - dry/snowy
 
 enum class direction {north, south, east, west};
 
@@ -121,43 +128,6 @@ void draw_line(std::vector<std::vector<double>>& in, int startx, int starty, int
         }
     }
 }
-//void draw_line(std::vector<std::vector<double>>& in, double min, double max, int startx, int starty, int endx, int endy)
-//{
-//    int dx = endx - startx;
-//    int dy = endy - starty;
-//    int step;
-//    int next_x;
-//    int next_y;
-//    double normalized = 0;
-//    if (abs(dx)>abs(dy))
-//    {
-//        step =dx/abs(dx);
-//        for (int i=0; i<abs(dx); i++)
-//        {
-//            next_x=i*step+startx;
-//            next_y=starty+i*dy/abs(dx);
-//            normalized = (in[next_x][next_y] - min) / (max-min);
-//            if (normalized>.4)
-//            {
-//                in[next_x][next_y]=min;
-//            }
-//        }
-//    }
-//    else
-//    {
-//        step = dy/abs(dy);
-//        for (int i=0; i<abs(dy); i++)
-//        {
-//            next_x=startx+i*dx/abs(dy);
-//            next_y=i*step+starty;
-//            normalized = (in[next_x][next_y] - min) / (max-min);
-//            if (normalized>.4)
-//            {
-//                in[next_x][next_y]=min;
-//            }
-//        }
-//    }
-//}
 //based off of http://members.chello.at/easyfilter/bresenham.html
 void draw_line(std::vector<std::vector<double>>& in, double min, double max, int startx, int starty, int endx, int endy)
 {
@@ -336,7 +306,7 @@ void get_noise_maps(std::vector<std::vector<double>>& ridge_vectormap, std::vect
     FastNoise temperature;
     temperature.SetSeed(2309);
     temperature.SetNoiseType(FastNoise::SimplexFractal);
-    temperature.SetFrequency(.003);
+    temperature.SetFrequency(.005);
     ridges.SetGradientPerturbAmp(30);
     for (int i=0; i<ridge_vectormap.size(); ++i)
     {
@@ -378,6 +348,27 @@ void find_max_min_vectormap(std::vector<std::vector<double>>& vectormap, double&
     min = absolute_min;
     max = absolute_max;
 }
+
+void find_max_min_vectormap(std::vector<std::vector<double>>& vectormap, double& min, double& max, double to_ignore)
+{
+    double absolute_min=vectormap[0][0];
+    double absolute_max=vectormap[0][0];
+    for (std::vector<double> column : vectormap)
+    {
+        double current_min = *std::min_element(std::begin(column), std::end(column));
+        if ((current_min<absolute_min && current_min != to_ignore) || (absolute_min==to_ignore && current_min != to_ignore))
+            {
+                absolute_min=current_min;
+            }
+            double current_max = *std::max_element(std::begin(column), std::end(column));
+            if(current_max>absolute_max)
+            {
+                absolute_max=current_max;
+            }
+            }
+            min = absolute_min;
+            max = absolute_max;
+            }
 
 //find all points_and_edges, separate the ones that are plausible, iterate through points
 void get_edges_to_draw(std::vector<Edge<double>>& edges, std::unordered_set<Edge<double>, edge_hasher>& edges_to_draw,
@@ -715,35 +706,28 @@ void drop (double& normalized, double& current_carrying, double& carrying_capaci
 {
     if (normalized < .4)
     {
-        if (current_carrying < carrying_capacity)
+        if (abs(current_carrying) < abs(carrying_capacity))
         {
             current_carrying += pickup_perc*carrying_capacity; //make moisture here max? doesn't really matter, it's water anyways
-            if (current_carrying > carrying_capacity)
+            if (abs(current_carrying) > abs(carrying_capacity))
             {
                 current_carrying = carrying_capacity;
             }
         }
         /*                                              _________________________                                                   */
+        to_effect[current_x][current_y] = 0;
         /*                                              _________________________                                                   */
-        /*                                              _________________________                                                   */
-        /*                                              _________________________                                                   */
-        to_effect[current_x][current_y] = 2;
-        /*                                              _________________________                                                   */
-        /*                                              _________________________                                                   */
-        /*                                              _________________________                                                   */
-        /*                                              _________________________                                                   */
-
     }
     else
     {
         double drop_amount = 0;
         if (current_carrying>0)
         {
-            if (current_carrying*perc_drop > min_drop_perc*carrying_capacity)
+            if (abs(current_carrying*perc_drop) > abs(min_drop_perc*carrying_capacity))
             {
                 drop_amount = current_carrying*perc_drop;
             }
-            else if (current_carrying > min_drop_perc*carrying_capacity)
+            else if (abs(current_carrying) > abs(min_drop_perc*carrying_capacity))
             {
                 drop_amount = min_drop_perc*carrying_capacity;
             }
@@ -751,7 +735,23 @@ void drop (double& normalized, double& current_carrying, double& carrying_capaci
             {
                 drop_amount = current_carrying;
             }
-            current_carrying -= drop_amount;
+            //rain-shadow attempt 1
+            if (normalized>.65)
+            {
+                double diff = pow((normalized - .65)/.35, 2);
+                if (abs(diff*carrying_capacity)>abs(drop_amount))
+                {
+                    current_carrying -= diff*carrying_capacity;
+                }
+                else
+                {
+                    current_carrying -= drop_amount;
+                }
+            }
+            else
+            {
+                current_carrying -= drop_amount;
+            }
         }
         to_effect[current_x][current_y] += drop_amount;
     }
@@ -823,6 +823,137 @@ std::vector<std::vector<double>> convert_json(nlohmann::json& in)
     return to_return;
 }
 
+std::vector<std::vector<terrain>> combined_vectormap(std::vector<std::vector<double>>& elevation, double& elev_min, double& elev_range,
+                                                  std::vector<std::vector<double>>& moisture, double& moist_min, double& moist_range,
+                                                  std::vector<std::vector<double>>& temperature, double& temperature_min, double& temperature_range)
+{
+    double water_height = .4;
+    double mount_height = .85;
+    double highland_height = .65;
+    double high_temp = .75;
+    double low_temp = .2;
+    double fairly_dry = .5;
+    double really_dry = .4;
+    double fairly_wet = .8;
+    std::vector<terrain> column (elevation[0].size());
+    std::vector<std::vector<terrain>> final_terrain (elevation.size(), column);
+    double normalized_elev, normalized_moist, normalized_temp;
+    for (int i=0; i<elevation.size(); i++)
+    {
+        for (int j=0; j<elevation[0].size(); j++)
+        {
+            normalized_elev = (elevation[i][j]-elev_min) / elev_range;
+            if (normalized_elev > water_height)
+            {
+                normalized_moist = (moisture[i][j]-moist_min) / moist_range;
+                normalized_temp = (temperature[i][j]-temperature_min) / temperature_range;
+                if (normalized_elev > mount_height)
+                {
+                    if (normalized_moist > fairly_dry)
+                    {
+                        final_terrain[i][j] = terrain::snow_mount;
+                    }
+                    else
+                    {
+                        final_terrain[i][j] = terrain::dry_mount;
+                    }
+                }
+                else if (normalized_elev > highland_height)
+                {
+                    //tropical + tropical dry highlands?
+                    if (normalized_temp < low_temp)
+                    {
+                        if (normalized_moist > fairly_dry)
+                        {
+                            final_terrain[i][j] = terrain::boreal_high;
+                        }
+                        else
+                        {
+                            final_terrain[i][j] = terrain::tundra_high;
+                        }
+                    }
+                    else if (normalized_temp > high_temp)
+                    {
+                        if (normalized_moist > fairly_dry)
+                        {
+                            final_terrain[i][j] = terrain::tropical_high;
+                        }
+                        else
+                        {
+                            final_terrain[i][j] = terrain::tropical_dry_high;
+                        }
+                    }
+                    else
+                    {
+                        if (normalized_moist > fairly_wet)
+                        {
+                            final_terrain[i][j] = terrain::wet_high;
+                        }
+                        else if (normalized_moist < really_dry)
+                        {
+                            final_terrain[i][j] = terrain::desert_high;
+                        }
+                        else
+                        {
+                            final_terrain[i][j] = terrain::temperate_high;
+                        }
+                    }
+                }
+                else
+                {
+                    /*scrub,temperate, tropical */
+                    if (normalized_temp < low_temp)
+                    {
+                        if (normalized_moist > fairly_dry)
+                        {
+                            final_terrain[i][j] = terrain::boreal;
+                        }
+                        else
+                        {
+                            final_terrain[i][j] = terrain::tundra;
+                        }
+                    }
+                    else if (normalized_temp > high_temp)
+                    {
+                        if (normalized_moist > fairly_dry)
+                        {
+                            final_terrain[i][j] = terrain::tropical;
+                        }
+                        else
+                        {
+                            final_terrain[i][j] = terrain::tropical_dry;
+                        }
+                    }
+                    else
+                    {
+                        if (normalized_moist > fairly_wet)
+                        {
+                            final_terrain[i][j] = terrain::wetland;
+                        }
+                        else if (normalized_moist < really_dry)
+                        {
+                            final_terrain[i][j] = terrain::desert;
+                        }
+                        else if (normalized_moist < fairly_dry)
+                        {
+                            final_terrain[i][j] = terrain::scrub;
+                        }
+                        else
+                        {
+                            final_terrain[i][j] = terrain::temperate;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                final_terrain[i][j] = terrain::water;
+            }
+        }
+    }
+    return final_terrain;
+}
+
 int main(int argc, const char * argv[])
 {
     int hard_conc = 1.5 * std::thread::hardware_concurrency();
@@ -889,7 +1020,6 @@ int main(int argc, const char * argv[])
     double temperature_max;
     find_max_min_vectormap(temperature_vectormap, temperature_min, temperature_max);
     double temperature_range = .8*(temperature_max-temperature_min);
-    double oceanic_cooling_power = temperature_range/8; //do i really want to do this, probably not
     PoissonGenerator::DefaultPRNG some_generator = PoissonGenerator::DefaultPRNG(58);
     double width_to_height_ratio = double(num_columns)/double(num_rows);
     if (generate_new_map)
@@ -925,7 +1055,7 @@ int main(int argc, const char * argv[])
     {
         for (int j=0; j<temperature_vectormap[i].size(); j++)
         {
-            temperature_vectormap[i][j]-=j*temperature_range/num_rows;
+            temperature_vectormap[i][j]-=j*2*temperature_range/num_rows;
             double normalized_elevation = ridge_vectormap[i][j]-absolute_min/(absolute_max-absolute_min);
             if (normalized_elevation>.75)
             {
@@ -940,10 +1070,15 @@ int main(int argc, const char * argv[])
     double moisture_min, moisture_max;
     find_max_min_vectormap(moisture_vectormap, moisture_min, moisture_max);
     double moisture_range = moisture_max-moisture_min;
-    wind_effects(moisture_range*160, .01, .3, .001, direction::east, ridge_vectormap, moisture_vectormap, absolute_min, absolute_range);
-    wind_effects(moisture_range*80, .02, .15, .002, direction::west, ridge_vectormap, moisture_vectormap, absolute_min, absolute_range);
-    wind_effects(moisture_range*160, .01, .3, .001, direction::north, ridge_vectormap, moisture_vectormap, absolute_min, absolute_range);
-    wind_effects(moisture_range*80, .02, .15, .002, direction::south, ridge_vectormap, moisture_vectormap, absolute_min, absolute_range);
+    //deal with rainshadows, perhaps run one without river-replenishment, remove rivers, then run again to refill rivers
+    wind_effects(moisture_range*160, .02, .2, .005, direction::east, ridge_vectormap, moisture_vectormap, absolute_min, absolute_range);
+    wind_effects(moisture_range*5, .16, .2, .04, direction::west, ridge_vectormap, moisture_vectormap, absolute_min, absolute_range);
+    wind_effects(moisture_range*30, .08, .2, .01, direction::north, ridge_vectormap, moisture_vectormap, absolute_min, absolute_range);
+    wind_effects(moisture_range*5, .16, .2, .04, direction::south, ridge_vectormap, moisture_vectormap, absolute_min, absolute_range);
+    wind_effects(-temperature_range*5, .02, .1, .005, direction::east, ridge_vectormap, temperature_vectormap, absolute_min, absolute_range);
+    wind_effects(-temperature_range*1, .1, .1, .04, direction::west, ridge_vectormap, temperature_vectormap, absolute_min, absolute_range);
+    wind_effects(-temperature_range*2, .05, .1, .01, direction::north, ridge_vectormap, temperature_vectormap, absolute_min, absolute_range);
+    wind_effects(-temperature_range*1, .1, .1, .04, direction::south, ridge_vectormap, temperature_vectormap, absolute_min, absolute_range);
     PoissonGenerator::DefaultPRNG city_generator = PoissonGenerator::DefaultPRNG(85);
     int num_city_sampling = num_rows/16 * num_columns / 16;
     std::vector<PoissonGenerator::sPoint> city_points = PoissonGenerator::GeneratePoissonPoints(num_city_sampling, city_generator, width_to_height_ratio, 30, false);
@@ -1027,20 +1162,28 @@ int main(int argc, const char * argv[])
             draw_line(provincial_vectormap, 0, 1, city_edge.p1.x, city_edge.p1.y, city_edge.p2.x, city_edge.p2.y);
         }
     }
-    find_max_min_vectormap(temperature_vectormap, temperature_min, temperature_max);
-    find_max_min_vectormap(moisture_vectormap, moisture_min, moisture_max);
+    find_max_min_vectormap(temperature_vectormap, temperature_min, temperature_max, 0);
+    find_max_min_vectormap(moisture_vectormap, moisture_min, moisture_max, 0);
+    temperature_range = temperature_max-temperature_min;
+    moisture_range = moisture_max-moisture_min;
+    std::cout<<moisture_min << "," << moisture_max <<"\n"<<temperature_min << "," << temperature_max << "\n";
 //    checkthis(ridge_vectormap, num_rows, num_columns, "ayoo11.png", absolute_min, absolute_max);
-    checkthis(moisture_vectormap, num_rows, num_columns, "ayoo1.png", moisture_min, moisture_max);
-    checkthis(temperature_vectormap, num_rows, num_columns, "ayoo2.png", temperature_min, temperature_max);
+//    checkthis(moisture_vectormap, num_rows, num_columns, "ayoo1.png", moisture_min, moisture_max);
+//    checkthis(temperature_vectormap, num_rows, num_columns, "ayoo2.png", temperature_min, temperature_max);
 //    checkthis(poisson_vectormap, num_rows, num_columns, "ayoo14.png", 0, 1);
     double provincial_min, provincial_max;
     find_max_min_vectormap(provincial_vectormap, provincial_min, provincial_max);
     checkthis(provincial_vectormap, num_rows, num_columns, "ayoo9.png", provincial_min, provincial_max);
-    find_max_min_vectormap(ridge_vectormap, absolute_min, absolute_max);
-    std::cout<<absolute_min<<","<<absolute_max<<"\n";
-    nlohmann::json elevations = convert_vectormap(ridge_vectormap);
-    std::ofstream o("elevations.json");
-    o << elevations << std::endl;
+    std::vector<std::vector<terrain>> final_terrain_map = combined_vectormap(ridge_vectormap, absolute_min, absolute_range, moisture_vectormap, moisture_min, moisture_range, temperature_vectormap, temperature_min, temperature_range);
+    checkthis(final_terrain_map, num_rows, num_columns, "finalmap.png");
+//    find_max_min_vectormap(ridge_vectormap, absolute_min, absolute_max);
+//    std::cout<<absolute_min<<","<<absolute_max<<"\n";
+    if (generate_new_map)
+    {
+        nlohmann::json elevations = convert_vectormap(ridge_vectormap);
+        std::ofstream o("elevations.json");
+        o << elevations << std::endl;
+    }
     return 0;
 }
 
