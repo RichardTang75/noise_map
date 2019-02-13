@@ -11,14 +11,16 @@
 #include <unordered_map>
 #include <fstream>
 #include "3rd party libs/lodepng/lodepng.h"
-enum terrain {water, desert, scrub, tundra, boreal, temperate, wetland, tropical, tropical_dry, desert_high, temperate_high,
+enum terrain {water, river, desert, scrub, tundra, boreal, temperate, wetland, tropical, tropical_dry, desert_high, temperate_high,
     boreal_high, tundra_high, wet_high, tropical_high, tropical_dry_high, dry_mount, snow_mount};
+
 
 void terrain_img(std::vector<std::vector<terrain>>& array, std::vector<unsigned char>& img,
                  const int& rows, const int& cols)
 {
     std::unordered_map<terrain, std::vector<int>> terrain_colors;
     terrain_colors[terrain::water] = {92, 131, 249};
+    terrain_colors[terrain::river] = {114, 184, 246};
     terrain_colors[terrain::tropical] = {175, 203, 91};
     terrain_colors[terrain::tropical_dry] = {203, 188, 92};
     terrain_colors[terrain::tropical_high] = {216, 240 ,142};

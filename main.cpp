@@ -15,6 +15,7 @@
 #include "3rd party libs/poisson-disk-generator/PoissonGenerator.h"
 #include "3rd party libs/ThreadPool/ThreadPool.h"
 #include "3rd party libs/json/json.hpp"
+#include "3rd party libs/delaunator-cpp/include/delaunator.hpp"
 #include <unordered_set>
 #include <unordered_map>
 #include <random>
@@ -22,13 +23,7 @@
 #include <fstream>
 #include "river_creation.hpp"
 
-//rivers -color, lakes-color, oceans-color
-//normals - desert, scrub, tundra, boreal, temperate, tropical
-//highlands, desert, temperate, boreal, tundra, wet
-//mountains - dry/snowy
-
 enum class direction {north, south, east, west};
-
 
 struct coordinate
 {
@@ -179,7 +174,7 @@ void draw_line(std::vector<std::vector<double>>& in, double min, double max, int
         }
     }
 }
-double raycast_cost(std::vector<std::vector<double>>& in, double min, double range, int startx, int starty, int endx, int endy)
+double raycast_cost(std::vector<std::vector<terrain>>& in, std::unordered_map<terrain, double>& terrain_costs, int startx, int starty, int endx, int endy)
 {
     double total_cost=0;
     int dx = endx - startx;
@@ -195,27 +190,7 @@ double raycast_cost(std::vector<std::vector<double>>& in, double min, double ran
         {
             next_x=i*step+startx;
             next_y=starty+i*dy/abs(dx);
-            normalized = (in[next_x][next_y]-min) / range;
-            if (normalized == 0)
-            {
-                total_cost+=7;
-            }
-            else if (normalized < .4)
-            {
-                total_cost+=3;
-            }
-            else if (normalized > .85)
-            {
-                total_cost+=5;
-            }
-            else if (normalized > .65)
-            {
-                total_cost+=2;
-            }
-            else
-            {
-                total_cost+=1;
-            }
+            total_cost+=terrain_costs[in[next_x][next_y]];
         }
     }
     else
@@ -225,27 +200,7 @@ double raycast_cost(std::vector<std::vector<double>>& in, double min, double ran
         {
             next_x=startx+i*dx/abs(dy);
             next_y=i*step+starty;
-            normalized = (in[next_x][next_y]-min) / range;
-            if (normalized == 0)
-            {
-                total_cost+=7;
-            }
-            else if (normalized < .4)
-            {
-                total_cost+=3;
-            }
-            else if (normalized > .85)
-            {
-                total_cost+=5;
-            }
-            else if (normalized > .65)
-            {
-                total_cost+=2;
-            }
-            else
-            {
-                total_cost+=1;
-            }
+            total_cost+=terrain_costs[in[next_x][next_y]];
         }
     }
     return total_cost;
@@ -291,7 +246,7 @@ void get_noise_maps(std::vector<std::vector<double>>& ridge_vectormap, std::vect
     ridges.SetFractalLacunarity(2);
     ridges.SetFractalGain(.6);
     ridges.SetFractalType(FastNoise::RigidMulti);
-    ridges.SetGradientPerturbAmp(15);
+    ridges.SetGradientPerturbAmp(30);
     ridges.SetFrequency(.003);
     FastNoise elevation;
     elevation.SetSeed(283);
@@ -302,12 +257,12 @@ void get_noise_maps(std::vector<std::vector<double>>& ridge_vectormap, std::vect
     moisture.SetSeed(8743);
     moisture.SetNoiseType(FastNoise::SimplexFractal);
     moisture.SetFrequency(.007);
-    ridges.SetGradientPerturbAmp(30);
+    moisture.SetGradientPerturbAmp(45);
     FastNoise temperature;
     temperature.SetSeed(2309);
     temperature.SetNoiseType(FastNoise::SimplexFractal);
     temperature.SetFrequency(.005);
-    ridges.SetGradientPerturbAmp(30);
+    temperature.SetGradientPerturbAmp(45);
     for (int i=0; i<ridge_vectormap.size(); ++i)
     {
         std::vector<double> current_column = ridge_vectormap[i];
@@ -437,9 +392,9 @@ double get_raycast_max_radius(Vector2<double>& city, std::vector<Edge<double>>& 
     return max_dist_squared;
 }
 
-std::unordered_set<coordinate, coordinate::hash> second_flood_fill_consolidation (city_flood_fill& original, std::vector<std::vector<double>>& political_map,
-                                                std::vector<std::vector<double>>& elevation_map, double elevation_min,
-                                                 double elevation_range, int num_rows, int num_cols)
+std::unordered_set<coordinate, coordinate::hash> second_flood_fill_consolidation (city_flood_fill& original,
+                                                std::vector<std::vector<double>>& political_map,
+                                                std::vector<std::vector<terrain>>& terrain_map, int num_rows, int num_cols)
 {
     std::priority_queue<flood_fill_unit, std::vector<flood_fill_unit>, compare_flood_fill_units> possible;
     std::vector<coordinate> directions =
@@ -460,12 +415,11 @@ std::unordered_set<coordinate, coordinate::hash> second_flood_fill_consolidation
         for (coordinate dir : directions)
         {
             coordinate next = coordinate{current.location.x+dir.x, current.location.y+dir.y};
-            double normalized = (elevation_map[next.x][next.y]-elevation_min)/elevation_range;
             if (dist_squared(next.x, next.y, original.city_start.x, original.city_start.y)< original.max_rad &&
                 next.x > 0 && next.x < num_cols && next.y >0 && next.y < num_rows &&
                 visited.count(next) == 0 && in_queue.count(next) == 0 && political_map[next.x][next.y] == original.number)
             {
-                if (normalized > .4 || normalized == 0)
+                if (terrain_map[next.x][next.y] != terrain::water)
                 {
                     possible.push(flood_fill_unit{next, 0, current.manhattan_dist+1});
                     in_queue.emplace(next);
@@ -477,8 +431,7 @@ std::unordered_set<coordinate, coordinate::hash> second_flood_fill_consolidation
 }
 
 city_flood_fill third_flood_fill_gaps (city_flood_fill& original, std::unordered_set<coordinate, coordinate::hash>& contiguous_area,
-                                       std::vector<std::vector<double>>& political_map, std::vector<std::vector<double>>& elevation_map,
-                                       double elevation_min, double elevation_range, int num_rows, int num_cols)
+                                       std::vector<std::vector<double>>& political_map, std::vector<std::vector<terrain>>& terrain_map, int num_rows, int num_cols)
 {
     city_flood_fill to_return;
     to_return.city_start = original.city_start;
@@ -506,12 +459,11 @@ city_flood_fill third_flood_fill_gaps (city_flood_fill& original, std::unordered
         for (coordinate dir : directions)
         {
             coordinate next = coordinate{current.location.x+dir.x, current.location.y+dir.y};
-            double normalized = (elevation_map[next.x][next.y]-elevation_min)/elevation_range;
             if (dist_squared(next.x, next.y, original.city_start.x, original.city_start.y)< original.max_rad &&
                 next.x > 0 && next.x < num_cols && next.y >0 && next.y < num_rows &&
                 visited.count(next) == 0 && in_queue.count(next) == 0)
             {
-                if (normalized > .4 || normalized == 0)
+                if (terrain_map[next.x][next.y] != terrain::water)
                 {
                     if (contiguous_area.count(next)>0)
                     {
@@ -529,12 +481,32 @@ city_flood_fill third_flood_fill_gaps (city_flood_fill& original, std::unordered
     return to_return;
 }
 
-city_flood_fill flood_fill_this_city (coordinate& location, double& max_rad_square, int number, std::vector<std::vector<double>>& map, double absolute_min, double absolute_range, int num_rows, int num_cols)
+city_flood_fill flood_fill_this_city (coordinate& location, double& max_rad_square, int number, std::vector<std::vector<terrain>>& map, int num_rows, int num_cols)
 {
     city_flood_fill to_return;
     to_return.city_start = location;
     to_return.number = number;
     to_return.max_rad = max_rad_square;
+    std::unordered_map<terrain, double> map_terrain_to_cost;
+    map_terrain_to_cost[terrain::water] = 5;
+    map_terrain_to_cost[terrain::river] = 40;
+    map_terrain_to_cost[terrain::tropical] = 1;
+    map_terrain_to_cost[terrain::tropical_dry] = 2;
+    map_terrain_to_cost[terrain::tropical_high] = 1.5;
+    map_terrain_to_cost[terrain::tropical_dry_high] = 3;
+    map_terrain_to_cost[terrain::desert] = 4;
+    map_terrain_to_cost[terrain::desert_high] = 6;
+    map_terrain_to_cost[terrain::scrub] = 2;
+    map_terrain_to_cost[terrain::boreal] = 1.5;
+    map_terrain_to_cost[terrain::boreal_high] = 2;
+    map_terrain_to_cost[terrain::tundra] = 3;
+    map_terrain_to_cost[terrain::tundra_high] = 4.5;
+    map_terrain_to_cost[terrain::temperate] = 1;
+    map_terrain_to_cost[terrain::temperate_high] = 1.5;
+    map_terrain_to_cost[terrain::wetland] = 1.5;
+    map_terrain_to_cost[terrain::wet_high] = 2;
+    map_terrain_to_cost[terrain::dry_mount] = 50;
+    map_terrain_to_cost[terrain::snow_mount] = 50;
     std::unordered_map<coordinate, int, coordinate::hash> costs;
     std::vector<double> column(num_rows, 0);
     std::vector<std::vector<double>> what(num_cols, column);
@@ -560,14 +532,13 @@ city_flood_fill flood_fill_this_city (coordinate& location, double& max_rad_squa
         for (coordinate dir : directions)
         {
             coordinate next = coordinate{current.location.x+dir.x, current.location.y+dir.y};
-            double normalized = (map[next.x][next.y]-absolute_min)/absolute_range;
             if (dist_squared(next.x, next.y, location.x, location.y)<max_rad_square &&
                 next.x > 0 && next.x < num_cols && next.y >0 && next.y < num_rows &&
                 visited.count(next) == 0 && in_queue.count(next) == 0)
             {
-                if (normalized > .4 || normalized == 0)
+                if (map[next.x][next.y] != terrain::water)
                 {
-                    possible.push(flood_fill_unit{next, raycast_cost(map, absolute_min, absolute_range, next.x, next.y, location.x, location.y), current.manhattan_dist+1});
+                    possible.push(flood_fill_unit{next, raycast_cost(map, map_terrain_to_cost, next.x, next.y, location.x, location.y), current.manhattan_dist+1});
                     in_queue.emplace(next);
                 }
             }
@@ -582,14 +553,34 @@ city_flood_fill flood_fill_this_city (coordinate& location, double& max_rad_squa
     checkthis(what, 512, 512, file_name, what_min, what_max);
     return to_return;
 }
-std::vector<city_candidate> rate_candidates(std::vector<coordinate>& poisson_city_points, std::vector<std::vector<double>>& ridge_vectormap, double absolute_min, double absolute_range, int radius, int num_rows, int num_columns, std::vector<std::vector<double>>& temperature_vectormap, double temperature_min, double temperature_range)
+std::vector<city_candidate> rate_candidates(std::vector<coordinate>& poisson_city_points, std::vector<std::vector<terrain>>& terrain_vectormap, int radius, int num_rows, int num_columns)
 {
+    std::unordered_map<terrain, double> terrain_score;
+    terrain_score[terrain::water] = 10;
+    terrain_score[terrain::river] = 40;
+    terrain_score[terrain::tropical] = 3;
+    terrain_score[terrain::tropical_dry] = 1;
+    terrain_score[terrain::tropical_high] = 2.5;
+    terrain_score[terrain::tropical_dry_high] = .75;
+    terrain_score[terrain::desert] = -2;
+    terrain_score[terrain::desert_high] = -2.5;
+    terrain_score[terrain::scrub] = -1;
+    terrain_score[terrain::boreal] = 3;
+    terrain_score[terrain::boreal_high] = 2.5;
+    terrain_score[terrain::tundra] = -1;
+    terrain_score[terrain::tundra_high] = -1.5;
+    terrain_score[terrain::temperate] = 5;
+    terrain_score[terrain::temperate_high] = 4;
+    terrain_score[terrain::wetland] = 2;
+    terrain_score[terrain::wet_high] = 2;
+    terrain_score[terrain::dry_mount] = 0;
+    terrain_score[terrain::snow_mount] = 0;
     std::vector<city_candidate> candidates;
     for (coordinate coord: poisson_city_points)
     {
         int x_value = coord.x;
         int y_value = coord.y;
-        if ((ridge_vectormap[x_value][y_value]-absolute_min)/absolute_range > .4)
+        if (terrain_vectormap[x_value][y_value] != terrain::water) //river cities r cool
         {
             double score = 0;
             for (int i=x_value-radius; i<x_value+radius; i++)
@@ -598,38 +589,7 @@ std::vector<city_candidate> rate_candidates(std::vector<coordinate>& poisson_cit
                 {
                     if (i<num_columns && i>0 && j>0 && j<num_rows)
                     {
-                        if (ridge_vectormap[i][j]==absolute_min)
-                        {
-                            score+=25;
-                        }
-                        else if ((ridge_vectormap[i][j]-absolute_min)/absolute_range < .4)
-                        {
-                            score+=5;
-                        }
-                        else if ((ridge_vectormap[i][j]-absolute_min)/absolute_range < .5)
-                        {
-                            score+=1;
-                        }
-                        else if ((ridge_vectormap[i][j]-absolute_min)/absolute_range < .65)
-                        {
-                            score+=.5;
-                        }
-                        else if ((ridge_vectormap[i][j]-absolute_min)/absolute_range > .85)
-                        {
-                            score-=.5;
-                        }
-                        if ((temperature_vectormap[i][j]-temperature_min)/(temperature_range) < .2)
-                        {
-                            score-=.15;
-                        }
-                        else if ((temperature_vectormap[i][j]-temperature_min)/(temperature_range) > .8)
-                        {
-                            score-=.15;
-                        }
-                        else if ((temperature_vectormap[i][j]-temperature_min)/(temperature_range) > .4 && (temperature_vectormap[i][j]-temperature_min)/(temperature_range) < .6)
-                        {
-                            score+=.15;
-                        }
+                        score+=terrain_score[terrain_vectormap[i][j]];
                     }
                 }
             }
@@ -647,7 +607,7 @@ void fill_vectormap_with_cheapest(std::vector<std::vector<double>>& provincial_v
         for (int j=0; j<provincial_vectormap[0].size(); j++)
         {
             int lowest_cost = -1;
-            int lowest_number=11;
+            int lowest_number=-1;
             for (city_flood_fill& fill_n_cost : city_flood_fills_for_provinces)
             {
                 if (fill_n_cost.flood_fill.count(coordinate{i, j}) > 0 )
@@ -823,6 +783,28 @@ std::vector<std::vector<double>> convert_json(nlohmann::json& in)
     return to_return;
 }
 
+nlohmann::json convert_to_json(std::vector<std::vector<terrain>>& in)
+{
+    nlohmann::json equiv_vectormap;
+    for (std::vector<terrain>& column: in)
+    {
+        nlohmann::json json_col(column);
+        equiv_vectormap.push_back(json_col);
+    }
+    return equiv_vectormap;
+}
+
+nlohmann::json convert_to_json(std::vector<std::vector<int>>& in)
+{
+    nlohmann::json equiv_vectormap;
+    for (std::vector<int>& column: in)
+    {
+        nlohmann::json json_col(column);
+        equiv_vectormap.push_back(json_col);
+    }
+    return equiv_vectormap;
+}
+
 std::vector<std::vector<terrain>> combined_vectormap(std::vector<std::vector<double>>& elevation, double& elev_min, double& elev_range,
                                                   std::vector<std::vector<double>>& moisture, double& moist_min, double& moist_range,
                                                   std::vector<std::vector<double>>& temperature, double& temperature_min, double& temperature_range)
@@ -947,48 +929,23 @@ std::vector<std::vector<terrain>> combined_vectormap(std::vector<std::vector<dou
             }
             else
             {
-                final_terrain[i][j] = terrain::water;
+                if (normalized_elev==0)
+                {
+                    final_terrain[i][j] = terrain::river;
+                }
+                else
+                {
+                    final_terrain[i][j] = terrain::water;
+                }
             }
         }
     }
     return final_terrain;
 }
 
-int main(int argc, const char * argv[])
+void edge_elevation_gradient(std::vector<std::vector<double>>& ridge_vectormap, int edge_size, double absolute_range,
+                             int num_columns, int num_rows)
 {
-    int hard_conc = 1.5 * std::thread::hardware_concurrency();
-    if (hard_conc==0)
-    {
-        hard_conc=3;
-    }
-    ThreadPool pool(hard_conc);
-    
-    bool generate_new_map = true;
-    std::ifstream injson("elevations.json");
-    nlohmann::json elevation_json;
-    if (injson.good())
-    {
-        generate_new_map=false;
-        injson >> elevation_json;
-    }
-    
-    int num_rows = 512; //1536;
-    int num_columns = 512; //2560;
-    std::vector<double> column(num_rows);
-    std::vector<std::vector<double>> ridge_vectormap(num_columns, column);
-    std::vector<std::vector<double>> moisture_vectormap(num_columns, column);
-    std::vector<std::vector<double>> temperature_vectormap(num_columns, column);
-    std::vector<std::vector<double>> poisson_vectormap(num_columns, column);
-    std::vector<std::vector<double>> provincial_vectormap(num_columns, column);
-    get_noise_maps(ridge_vectormap, moisture_vectormap, temperature_vectormap);
-    double absolute_min;
-    double absolute_max;
-    find_max_min_vectormap(ridge_vectormap, absolute_min, absolute_max);
-    std::cout<<absolute_min<<","<<absolute_max<<"\n";
-    double absolute_range = (absolute_max-absolute_min);
-    //go 20 in each side? set corners at -absolute, set 10 x 10 as half-absolute
-    //add x+y, 40 = .9*absolute_range/40
-    int edge_size = 160;
     for (int i=0; i<ridge_vectormap.size(); i++)
     {
         double column_edge_decrement=0;
@@ -1015,6 +972,44 @@ int main(int argc, const char * argv[])
             ridge_vectormap[i][j]=ridge_vectormap[i][j] - chosen_decrement;
         }
     }
+}
+
+int main(int argc, const char * argv[])
+{
+    int hard_conc = 1.5 * std::thread::hardware_concurrency();
+    if (hard_conc==0)
+    {
+        hard_conc=3;
+    }
+    ThreadPool pool(hard_conc);
+    
+    bool generate_new_map = true;
+    std::ifstream injson("elevations.json");
+    nlohmann::json elevation_json;
+//    if (injson.good())
+//    {
+//        generate_new_map=false;
+//        injson >> elevation_json;
+//    }
+    
+    int num_rows = 1536; //1536;
+    int num_columns = 2560; //2560;
+    std::vector<double> column(num_rows);
+    std::vector<std::vector<double>> ridge_vectormap(num_columns, column);
+    std::vector<std::vector<double>> moisture_vectormap(num_columns, column);
+    std::vector<std::vector<double>> temperature_vectormap(num_columns, column);
+    std::vector<std::vector<double>> poisson_vectormap(num_columns, column);
+    std::vector<std::vector<double>> provincial_vectormap(num_columns, column);
+    get_noise_maps(ridge_vectormap, moisture_vectormap, temperature_vectormap);
+    double absolute_min;
+    double absolute_max;
+    find_max_min_vectormap(ridge_vectormap, absolute_min, absolute_max);
+    std::cout<<absolute_min<<","<<absolute_max<<"\n";
+    double absolute_range = (absolute_max-absolute_min);
+    //go 20 in each side? set corners at -absolute, set 10 x 10 as half-absolute
+    //add x+y, 40 = .9*absolute_range/40
+    int edge_size = 160;
+    edge_elevation_gradient(ridge_vectormap, edge_size, absolute_range,num_columns, num_rows);
     //don't recheck min and max before drawing
     double temperature_min;
     double temperature_max;
@@ -1050,7 +1045,10 @@ int main(int argc, const char * argv[])
                       (edge_to_draw.p2.x), int(edge_to_draw.p2.y));
         }
     }
-    ridge_vectormap = convert_json(elevation_json);
+    if (!generate_new_map)
+    {
+        ridge_vectormap = convert_json(elevation_json);
+    }
     for (int i=0; i<temperature_vectormap.size(); i++)
     {
         for (int j=0; j<temperature_vectormap[i].size(); j++)
@@ -1080,6 +1078,32 @@ int main(int argc, const char * argv[])
     wind_effects(-temperature_range*2, .05, .1, .01, direction::north, ridge_vectormap, temperature_vectormap, absolute_min, absolute_range);
     wind_effects(-temperature_range*1, .1, .1, .04, direction::south, ridge_vectormap, temperature_vectormap, absolute_min, absolute_range);
     PoissonGenerator::DefaultPRNG city_generator = PoissonGenerator::DefaultPRNG(85);
+    find_max_min_vectormap(temperature_vectormap, temperature_min, temperature_max, 0);
+    find_max_min_vectormap(moisture_vectormap, moisture_min, moisture_max, 0);
+    temperature_range = temperature_max-temperature_min;
+    moisture_range = moisture_max-moisture_min;
+    std::cout<<moisture_min << "," << moisture_max <<"\n"<<temperature_min << "," << temperature_max << "\n";
+    checkthis(ridge_vectormap, num_rows, num_columns, "ayoo3.png", absolute_min, absolute_max);
+    checkthis(moisture_vectormap, num_rows, num_columns, "ayoo4.png", moisture_min, moisture_max);
+    checkthis(temperature_vectormap, num_rows, num_columns, "ayoo5.png", temperature_min, temperature_max);
+//    checkthis(poisson_vectormap, num_rows, num_columns, "ayoo14.png", 0, 1);
+    std::vector<std::vector<terrain>> final_terrain_map = combined_vectormap(ridge_vectormap, absolute_min, absolute_range, moisture_vectormap, moisture_min, moisture_range, temperature_vectormap, temperature_min, temperature_range);
+    checkthis(final_terrain_map, num_rows, num_columns, "finalmap1.png");
+//    find_max_min_vectormap(ridge_vectormap, absolute_min, absolute_max);
+//    std::cout<<absolute_min<<","<<absolute_max<<"\n";
+    if (generate_new_map)
+    {
+        nlohmann::json elevations = convert_vectormap(ridge_vectormap);
+        std::ofstream o("elevations.json");
+        o << elevations << std::endl;
+    }
+    
+    /*------------------------------------------------------------------------------------------------------------------------------*/
+    /*------------------------------------------------------------------------------------------------------------------------------*/
+    /*------------------------------------------------Province Generation Here------------------------------------------------------*/
+    /*------------------------------------------------------------------------------------------------------------------------------*/
+    /*------------------------------------------------------------------------------------------------------------------------------*/
+    
     int num_city_sampling = num_rows/16 * num_columns / 16;
     std::vector<PoissonGenerator::sPoint> city_points = PoissonGenerator::GeneratePoissonPoints(num_city_sampling, city_generator, width_to_height_ratio, 30, false);
     std::vector<coordinate> poisson_city_points;
@@ -1090,7 +1114,7 @@ int main(int argc, const char * argv[])
         poisson_city_points.push_back(coordinate{x_value, y_value});
     }
     int radius = 25;
-    std::vector<city_candidate> candidates = rate_candidates(poisson_city_points, ridge_vectormap, absolute_min, absolute_range, radius, num_rows, num_columns, temperature_vectormap, temperature_min, temperature_range);
+    std::vector<city_candidate> candidates = rate_candidates(poisson_city_points, final_terrain_map, radius, num_rows, num_columns);
     std::sort(candidates.begin(), candidates.end(), compare_city_candidates);
     std::vector<city_candidate> chosen_candidates;
     bool good_candidate;
@@ -1132,27 +1156,20 @@ int main(int argc, const char * argv[])
     }
     std::unordered_set<Edge<double>, edge_hasher> city_connections_not_draw;
     urquhart_graph(city_triangles, city_connections_not_draw);
-//    for (Edge<double> city_edge : city_edges)
-//    {
-//        if (city_connections_not_draw.count(city_edge) == 0)
-//        {
-//            draw_line(poisson_vectormap, city_edge.p1.x, city_edge.p1.y, city_edge.p2.x, city_edge.p2.y);
-//        }
-//    }
     std::vector<city_flood_fill> city_flood_fills_for_provinces;
     int number = 0;
     for (city_candidate chosen: chosen_candidates)
     {
         double max_rad_squared = city_radius_bounds[chosen.location];
-        city_flood_fills_for_provinces.push_back(flood_fill_this_city(chosen.location, max_rad_squared, number, ridge_vectormap, absolute_min, absolute_range, num_rows, num_columns));
+        city_flood_fills_for_provinces.push_back(flood_fill_this_city(chosen.location, max_rad_squared, number, final_terrain_map, num_rows, num_columns));
         number+=1;
     }
     fill_vectormap_with_cheapest(provincial_vectormap, city_flood_fills_for_provinces);
     std::vector<city_flood_fill> finished_flood_fills;
     for (city_flood_fill& second_pass : city_flood_fills_for_provinces)
     {
-        std::unordered_set<coordinate, coordinate::hash> contiguous = second_flood_fill_consolidation(second_pass, provincial_vectormap, ridge_vectormap, absolute_min, absolute_range, num_rows, num_columns);
-        finished_flood_fills.push_back(third_flood_fill_gaps(second_pass, contiguous, provincial_vectormap, ridge_vectormap, absolute_min, absolute_range, num_rows, num_columns));
+        std::unordered_set<coordinate, coordinate::hash> contiguous = second_flood_fill_consolidation(second_pass, provincial_vectormap, final_terrain_map, num_rows, num_columns);
+        finished_flood_fills.push_back(third_flood_fill_gaps(second_pass, contiguous, provincial_vectormap, final_terrain_map, num_rows, num_columns));
     }
     fill_vectormap_with_cheapest(provincial_vectormap, finished_flood_fills);
     for (Edge<double> city_edge : city_edges)
@@ -1162,28 +1179,18 @@ int main(int argc, const char * argv[])
             draw_line(provincial_vectormap, 0, 1, city_edge.p1.x, city_edge.p1.y, city_edge.p2.x, city_edge.p2.y);
         }
     }
-    find_max_min_vectormap(temperature_vectormap, temperature_min, temperature_max, 0);
-    find_max_min_vectormap(moisture_vectormap, moisture_min, moisture_max, 0);
-    temperature_range = temperature_max-temperature_min;
-    moisture_range = moisture_max-moisture_min;
-    std::cout<<moisture_min << "," << moisture_max <<"\n"<<temperature_min << "," << temperature_max << "\n";
-//    checkthis(ridge_vectormap, num_rows, num_columns, "ayoo11.png", absolute_min, absolute_max);
-//    checkthis(moisture_vectormap, num_rows, num_columns, "ayoo1.png", moisture_min, moisture_max);
-//    checkthis(temperature_vectormap, num_rows, num_columns, "ayoo2.png", temperature_min, temperature_max);
-//    checkthis(poisson_vectormap, num_rows, num_columns, "ayoo14.png", 0, 1);
+    
     double provincial_min, provincial_max;
     find_max_min_vectormap(provincial_vectormap, provincial_min, provincial_max);
     checkthis(provincial_vectormap, num_rows, num_columns, "ayoo9.png", provincial_min, provincial_max);
-    std::vector<std::vector<terrain>> final_terrain_map = combined_vectormap(ridge_vectormap, absolute_min, absolute_range, moisture_vectormap, moisture_min, moisture_range, temperature_vectormap, temperature_min, temperature_range);
-    checkthis(final_terrain_map, num_rows, num_columns, "finalmap.png");
-//    find_max_min_vectormap(ridge_vectormap, absolute_min, absolute_max);
-//    std::cout<<absolute_min<<","<<absolute_max<<"\n";
     if (generate_new_map)
     {
-        nlohmann::json elevations = convert_vectormap(ridge_vectormap);
-        std::ofstream o("elevations.json");
-        o << elevations << std::endl;
+        nlohmann::json terrains = convert_to_json(final_terrain_map);
+        std::ofstream out_terrain("terrains.json");
+        out_terrain << terrains << std::endl;
+        nlohmann::json provinces = convert_vectormap(provincial_vectormap);
+        std::ofstream out_province("provinces.json");
+        out_province << provinces << std::endl;
     }
     return 0;
 }
-

@@ -9,8 +9,7 @@
 #ifndef test_funcs_hpp
 #define test_funcs_hpp
 
-//make rivers own terrain, work on province generation later.
-enum terrain {water, desert, scrub, tundra, boreal, temperate, wetland, tropical, tropical_dry, desert_high, temperate_high,
+enum terrain {water, river, desert, scrub, tundra, boreal, temperate, wetland, tropical, tropical_dry, desert_high, temperate_high,
     boreal_high, tundra_high, wet_high, tropical_high, tropical_dry_high, dry_mount, snow_mount};
 
 void checkthis(std::vector<std::vector<float>>& in, int rows, int cols, float min, float max);

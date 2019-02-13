@@ -19,6 +19,30 @@ struct delaunay_point_hasher
         return e.x*53 + e.y*31;
     }
 };
+
+struct coordinate
+{
+    int x;
+    int y;
+    bool operator==(const coordinate& other) const
+    {
+        return (x==other.x && y==other.y);
+    }
+    struct hash
+    {
+        size_t operator() (const coordinate& coord) const
+        {
+            return coord.x*53+coord.y*31;
+        }
+    };
+};
+
+struct coordinate_edge
+{
+    coordinate p1;
+    coordinate p2;
+}
+
 struct edge_hasher
 {
     std::size_t operator()(Edge<double> const& e) const
@@ -37,6 +61,7 @@ struct edge_information
 struct growing_river
 {
     std::vector<Vector2<double>> grow_points;
+    std::vector<Vector2<double>> old_grow_points; //used for culling
     std::unordered_set<Vector2<double>, delaunay_point_hasher> all_points;
 };
 
