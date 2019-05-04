@@ -88,20 +88,6 @@ struct point_and_edges
     bool coastal;
 };
 
-std::vector<int> find_edges_involving_point(std::vector<coordinate_edge>& edges, coordinate& point)
-{
-    std::vector<int> to_return_indices;
-    for (int i=0; i<edges.size(); i++)
-    {
-        coordinate_edge checkin = edges[i];
-        if ((checkin.p1 == point) || (checkin.p2 == point))
-        {
-            to_return_indices.push_back(i);
-        }
-    }
-    return to_return_indices;
-}
-
 point_and_edges find_edges_involving_point(std::vector<coordinate_edge>& edges, coordinate& point, std::vector<std::vector<double>>& ridge_vectormap, double absolute_min, double absolute_range)
 {
     //returns empty vector to show that it's in the closed set already
