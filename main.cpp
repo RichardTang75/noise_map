@@ -24,6 +24,8 @@
 #include "river_creation.hpp"
 #include <chrono>
 
+double water_cutoff=.4;
+
 enum class direction {north, south, east, west};
 
 struct city_candidate
@@ -52,6 +54,13 @@ struct city_flood_fill
     double max_rad; //purely for the second pass.
 };
 
+struct city_owned
+{
+    int number;
+    std::unordered_set<coordinate, coordinate::hash> owned;
+    std::unordered_set<coordinate, coordinate::hash> empty_border;
+};
+
 struct flood_fill_unit
 {
     coordinate location;
@@ -76,8 +85,14 @@ double dist_squared(int x1, int y1, int x2, int y2)
 {
     return pow((x2 - x1), 2) + pow((y2 - y1), 2);
 }
-
-
+template<typename T, typename H>
+void unordered_set_combine (std::unordered_set<T, H>& in1, std::unordered_set<T, H> in2)
+{
+    for (const T& ele: in2)
+    {
+        in1.emplace(ele);
+    }
+}
 
 void draw_line(std::vector<std::vector<double>>& in, int startx, int starty, int endx, int endy)
 {
@@ -137,7 +152,7 @@ void draw_line(std::vector<std::vector<double>>& in, double min, double max, int
     while (true)
     {
         normalized = (in[next_x][next_y] - min) / (max-min);
-        if (normalized>.4)
+        if (normalized>water_cutoff)
         {
             in[next_x][next_y]=min;
         }
@@ -343,37 +358,23 @@ void find_max_min_vectormap(std::vector<std::vector<double>>& vectormap, double&
             }
 
 //find all points_and_edges, separate the ones that are plausible, iterate through points
-void get_edges_to_draw(std::vector<coordinate_edge>& edges, std::unordered_set<coordinate_edge, coordinate_edge::hash>& edges_to_draw,
+void get_edges_to_draw(const std::unordered_map<coordinate, std::vector<coordinate_edge>, coordinate::hash>& points_n_their_edges, std::unordered_set<coordinate_edge, coordinate_edge::hash>& edges_to_draw,
                        std::vector<std::vector<double>>& ridge_vectormap, double absolute_min, double absolute_range, ThreadPool& pool)
 {
     std::unordered_set<coordinate, coordinate::hash> visited_points;
     std::unordered_map<coordinate, point_and_edges, coordinate::hash> points_n_connections;
     std::vector<std::future<point_and_edges>> point_n_edge_futures;
-    for (coordinate_edge edge :  edges)
+    for (auto& point : points_n_their_edges)
     {
-        if (visited_points.count(edge.p1)==0)
-        {
-            point_n_edge_futures.push_back(pool.enqueue(find_edges_involving_point, std::ref(edges), edge.p1, std::ref(ridge_vectormap), absolute_min, absolute_range));
-            visited_points.emplace(edge.p1);
-        }
+        point_n_edge_futures.push_back(pool.enqueue(process_point_n_edges, std::ref(point.first), std::ref(point.second), std::ref(ridge_vectormap), absolute_min, absolute_range));
+
+        visited_points.emplace(point.first);
     }
     for (auto& future: point_n_edge_futures)
     {
         point_and_edges temp = future.get();
         points_n_connections[temp.point] = temp;
-    }
-    /*
-     for (city_flood_fill& second_pass : city_flood_fills_for_provinces)
-     {
-     city_flood_fill_futures.push_back(pool.enqueue(third_flood_fill_gaps, std::ref(second_pass), provincial_vectormap, final_terrain_map, num_rows, num_columns));
-     }
-     city_flood_fills_for_provinces.clear();
-     for (auto& future : city_flood_fill_futures)
-     {
-     finished_flood_fills.push_back(future.get());
-     }
-     */
-    std::cout<<"This part's over";
+    }    std::cout<<"This part's over";
     std::unordered_map<coordinate, point_and_edges, coordinate::hash> coast_points;
     std::unordered_map<coordinate, point_and_edges, coordinate::hash> land_points;
     for (auto point : points_n_connections)
@@ -382,12 +383,12 @@ void get_edges_to_draw(std::vector<coordinate_edge>& edges, std::unordered_set<c
         {
             coast_points[point.first] = point.second;
         }
-        else if ((ridge_vectormap[int(point.first.x)][int(point.first.y)]-absolute_min)/(absolute_range) > .4)
+        else if ((ridge_vectormap[int(point.first.x)][int(point.first.y)]-absolute_min)/(absolute_range) > water_cutoff)
         {
             land_points[point.first] = point.second;
         }
     }
-    get_to_draw(coast_points, land_points, edges, edges_to_draw);
+    get_to_draw(coast_points, land_points, edges_to_draw);
     //get_to_draw(temp.edge_and_probabilities, edges, edges_to_draw);
 }
 
@@ -465,14 +466,13 @@ std::unordered_set<coordinate, coordinate::hash> second_flood_fill_consolidation
 }
 
 //leave the noncontinguous areas empty, flood fill each one and choose one of the closest provinces
-city_flood_fill third_flood_fill_gaps (city_flood_fill& original, std::vector<std::vector<double>>& political_map,
-                                       std::vector<std::vector<terrain>>& terrain_map, int num_rows, int num_cols)
+city_owned         third_flood_fill_gaps (city_flood_fill& original,
+                   std::vector<std::vector<double>>& political_map,
+                   std::vector<std::vector<terrain>>& terrain_map, int num_rows, int num_cols)
 {
     std::unordered_set<coordinate, coordinate::hash> contiguous_area = second_flood_fill_consolidation(original, political_map, terrain_map, num_rows, num_cols);
-    city_flood_fill to_return;
-    to_return.city_start = original.city_start;
+    city_owned to_return;
     to_return.number = original.number;
-    to_return.max_rad = original.max_rad;
     std::priority_queue<flood_fill_unit, std::vector<flood_fill_unit>, compare_flood_fill_units> possible;
     std::vector<coordinate> directions =
     {
@@ -488,7 +488,7 @@ city_flood_fill third_flood_fill_gaps (city_flood_fill& original, std::vector<st
     {
         flood_fill_unit current = possible.top();
         possible.pop();
-        to_return.flood_fill[current.location] = current.cost;
+        to_return.owned.emplace(current.location);
         visited.emplace(current.location);
         for (coordinate dir : directions)
         {
@@ -503,10 +503,10 @@ city_flood_fill third_flood_fill_gaps (city_flood_fill& original, std::vector<st
                     {
                         possible.push(flood_fill_unit{next, 0, current.manhattan_dist+1});
                     }
-//                    else
-//                    {
-//                        possible.push(flood_fill_unit{next, current.cost+1, current.manhattan_dist+1});
-//                    }
+                    else
+                    {
+                        to_return.empty_border.emplace(next);
+                    }
                     //right here, this is where you add it to the list of unfilled, these are the boundaries
                     in_queue.emplace(next);
                 }
@@ -688,38 +688,137 @@ std::vector<city_candidate> rate_candidates(std::vector<coordinate>& poisson_cit
 }
 
 void fill_vectormap_with_cheapest(std::vector<std::vector<double>>& provincial_vectormap,
+                                  std::vector<std::vector<terrain>>& terrain_map,
                                   std::vector<city_flood_fill>& city_flood_fills_for_provinces)
 {
     for (int i=0; i<provincial_vectormap.size(); i++)
     {
         for (int j=0; j<provincial_vectormap[0].size(); j++)
         {
-            int lowest_cost = -1;
-            int lowest_number=-1;
-            for (city_flood_fill& fill_n_cost : city_flood_fills_for_provinces)
+            if (terrain_map[i][j] != terrain::water)
             {
-                if (fill_n_cost.flood_fill.count(coordinate{i, j}) > 0 )
+                int lowest_cost = -1;
+                int lowest_number=-1;
+                for (city_flood_fill& fill_n_cost : city_flood_fills_for_provinces)
                 {
-                    if (i==197 && j==95)
+                    if (fill_n_cost.flood_fill.count(coordinate{i, j}) > 0 )
                     {
-                        std::cout << fill_n_cost.flood_fill[coordinate{i,j}] << "by" << fill_n_cost.number << "\n";
-                    }
-                    if (lowest_cost==-1)
-                    {
-                        lowest_cost = fill_n_cost.flood_fill[coordinate{i,j}];
-                        lowest_number = fill_n_cost.number;
-                    }
-                    else if (lowest_cost > fill_n_cost.flood_fill[coordinate{i,j}])
-                    {
-                        lowest_cost = fill_n_cost.flood_fill[coordinate{i,j}];
-                        lowest_number = fill_n_cost.number;
+                        if (i==197 && j==95)
+                        {
+                            std::cout << fill_n_cost.flood_fill[coordinate{i,j}] << "by" << fill_n_cost.number << "\n";
+                        }
+                        if (lowest_cost==-1)
+                        {
+                            lowest_cost = fill_n_cost.flood_fill[coordinate{i,j}];
+                            lowest_number = fill_n_cost.number;
+                        }
+                        else if (lowest_cost > fill_n_cost.flood_fill[coordinate{i,j}])
+                        {
+                            lowest_cost = fill_n_cost.flood_fill[coordinate{i,j}];
+                            lowest_number = fill_n_cost.number;
+                        }
                     }
                 }
+                provincial_vectormap[i][j] = double(lowest_number);
             }
-            provincial_vectormap[i][j] = double(lowest_number);
+            else
+            {
+                provincial_vectormap[i][j] = -5;
+            }
         }
     }
 }
+
+void fill_vectormap_with_owned(std::vector<std::vector<double>>& provincial_vectormap, std::vector<city_owned>& all_city_owned)
+{
+    for (int i=0; i<provincial_vectormap.size(); i++)
+    {
+        for (int j=0; j<provincial_vectormap[0].size(); j++)
+        {
+            provincial_vectormap[i][j] = -1;
+            for (city_owned& one_city : all_city_owned)
+            {
+                if (one_city.owned.count(coordinate{i, j}) > 0 )
+                {
+                    provincial_vectormap[i][j] = one_city.number;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+int query_nearby(const coordinate& location,
+                 std::vector<coordinate>& to_hit_up,
+                 std::unordered_set<coordinate, coordinate::hash>& invalid,
+                 const std::vector<std::vector<double>>& provincial_vectormap)
+{
+    std::unordered_set<coordinate, coordinate::hash> checkin_out;
+    std::unordered_set<coordinate, coordinate::hash> core;
+    std::unordered_map<int, int> number_and_score;
+    for (int i=-1; i<2; i++)
+    {
+        for (int j=-1; j<2; j++)
+        {
+            checkin_out.emplace(coordinate{i, j});
+            if (abs(i+j)<2)
+            {
+                core.emplace(coordinate{i, j});
+            }
+        }
+    }
+    for (const coordinate& check_out : checkin_out)
+    {
+        coordinate next = coordinate{location.x+check_out.x, location.y+check_out.y};
+        if (provincial_vectormap[next.x][next.y] != -1)
+        {
+            int score = powf(5-abs(check_out.x + check_out.y),2);
+            number_and_score[provincial_vectormap[next.x][next.y]] += score;
+        }
+        else
+        {
+            if (core.count(check_out) > 0 && invalid.count(next)==0)
+            {
+                to_hit_up.push_back(next);
+                invalid.emplace(next);
+            }
+        }
+    }
+    int best_score = 0;
+    int best_number = -1;
+    for (auto& is_best : number_and_score)
+    {
+        if (is_best.second > best_score)
+        {
+            best_score = is_best.second;
+            best_number = is_best.first;
+        }
+    }
+    return best_number;
+}
+
+void fill_gaps(std::vector<std::vector<double>>& provincial_vectormap,
+               std::vector<std::vector<terrain>>& terrain_map,
+               std::unordered_set<coordinate, coordinate::hash>& border_empties)
+{
+    std::unordered_set<coordinate, coordinate::hash> invalid;
+    std::vector<coordinate> to_hit_up;
+    for (const coordinate& border : border_empties)
+    {
+        invalid.emplace(border);
+        to_hit_up.push_back(border);
+    }
+    while (to_hit_up.size()>0)
+    {
+        coordinate next = to_hit_up.back();
+        to_hit_up.pop_back();
+        if (terrain_map[next.x][next.y]!=terrain::water)
+        {
+            provincial_vectormap[next.x][next.y] = query_nearby(next, to_hit_up, invalid, provincial_vectormap);
+        }
+    }
+}
+
 void urquhart_graph(std::vector<coordinate_triangle>& city_triangles, std::unordered_set<coordinate_edge, coordinate_edge::hash>& city_connections_not_draw)
 {
     for (coordinate_triangle tri : city_triangles)
@@ -756,7 +855,7 @@ void urquhart_graph(std::vector<coordinate_triangle>& city_triangles, std::unord
 void drop (double& normalized, double& current_carrying, double& carrying_capacity, double& pickup_perc,
            double& perc_drop, double& min_drop_perc, int& current_x, int& current_y, std::vector<std::vector<double>>& to_effect)
 {
-    if (normalized < .4)
+    if (normalized < water_cutoff)
     {
         if (abs(current_carrying) < abs(carrying_capacity))
         {
@@ -901,7 +1000,7 @@ std::vector<std::vector<terrain>> combined_vectormap(std::vector<std::vector<dou
                                                   std::vector<std::vector<double>>& moisture, double& moist_min, double& moist_range,
                                                   std::vector<std::vector<double>>& temperature, double& temperature_min, double& temperature_range)
 {
-    double water_height = .4;
+    double water_height = water_cutoff;
     double mount_height = .85;
     double highland_height = .65;
     double high_temp = .75;
@@ -1124,7 +1223,8 @@ int main(int argc, const char * argv[])
         }
         
         delaunator::Delaunator river_triangulate(poisson_delaunay_points);
-        std::vector<coordinate_edge> edges;
+        std::unordered_map<coordinate, std::vector<coordinate_edge>, coordinate::hash> points_n_their_edges;
+
         for(std::size_t i = 0; i < river_triangulate.triangles.size(); i+=3)
         {
             int x0, x1, x2, y0, y1, y2;
@@ -1140,18 +1240,32 @@ int main(int argc, const char * argv[])
             coordinate_edge e1 {p1, p2};
             coordinate_edge e2 {p1, p3};
             coordinate_edge e3 {p2, p3};
-            //do the points n stuff here, avoid having to search through a large array to check
-            edges.push_back(e1);
-            edges.push_back(e2);
-            edges.push_back(e3);
+            double normalized_p1 = (ridge_vectormap[int(p1.x)][int(p1.y)]-absolute_min)/(absolute_range);
+            double normalized_p2 = (ridge_vectormap[int(p2.x)][int(p2.y)]-absolute_min)/(absolute_range);
+            double normalized_p3 = (ridge_vectormap[int(p3.x)][int(p3.y)]-absolute_min)/(absolute_range);
+            if (normalized_p1>water_cutoff || normalized_p2>water_cutoff)
+            {
+                points_n_their_edges[p1].push_back(e1);
+                points_n_their_edges[p2].push_back(e1);
+            }
+            if (normalized_p1>water_cutoff || normalized_p3>water_cutoff)
+            {
+                points_n_their_edges[p1].push_back(e2);
+                points_n_their_edges[p3].push_back(e2);
+            }
+            if (normalized_p3>water_cutoff || normalized_p2>water_cutoff)
+            {
+                points_n_their_edges[p3].push_back(e3);
+                points_n_their_edges[p2].push_back(e3);
+            }
         }
         std::unordered_set<coordinate_edge, coordinate_edge::hash> edges_to_draw;
-        std::cout << "delaunay done" << edges.size()<<"\n";
-        get_edges_to_draw(edges, edges_to_draw, ridge_vectormap, absolute_min, absolute_range, pool);
+        std::cout << "delaunay done" << points_n_their_edges.size()<<"\n";
+        get_edges_to_draw(points_n_their_edges, edges_to_draw, ridge_vectormap, absolute_min, absolute_range, pool);
 //        std::future<void> please_save_time;
 //        please_save_time = pool.enqueue(get_edges_to_draw, std::ref(edges), std::ref(edges_to_draw), std::ref(ridge_vectormap), absolute_min, absolute_range);
 //        please_save_time.get(); //i swear i will actually make this save time when I clean it all up
-        for (coordinate_edge edge_to_draw : edges_to_draw)
+        for (const coordinate_edge& edge_to_draw : edges_to_draw)
         {
             draw_line(poisson_vectormap, int(edge_to_draw.p1.x), int(edge_to_draw.p1.y),
                       (edge_to_draw.p2.x), int(edge_to_draw.p2.y));
@@ -1173,7 +1287,7 @@ int main(int argc, const char * argv[])
             {
                 temperature_vectormap[i][j]-=(normalized_elevation-.75)*1.5*temperature_range;
             }
-            else if (normalized_elevation<.4)
+            else if (normalized_elevation<water_cutoff)
             {
                 temperature_vectormap[i][j]-=.125*temperature_range;
             }
@@ -1309,30 +1423,25 @@ int main(int argc, const char * argv[])
         city_flood_fills_for_provinces.push_back(future.get());
     }
     std::cout << "donezo";
-    fill_vectormap_with_cheapest(provincial_vectormap, city_flood_fills_for_provinces);
-    std::vector<city_flood_fill> finished_flood_fills;
+    fill_vectormap_with_cheapest(provincial_vectormap, final_terrain_map, city_flood_fills_for_provinces);
+    std::vector<city_owned> finished_owned;
     city_flood_fill_futures.clear();
+    
+    std::vector<std::future<city_owned>> city_owned_futures;
     for (city_flood_fill& second_pass : city_flood_fills_for_provinces)
     {
-        city_flood_fill_futures.push_back(pool.enqueue(third_flood_fill_gaps, std::ref(second_pass), provincial_vectormap, final_terrain_map, num_rows, num_columns));
+        city_owned_futures.push_back(pool.enqueue(third_flood_fill_gaps, std::ref(second_pass),
+                                                       provincial_vectormap, final_terrain_map, num_rows, num_columns));
     }
-    city_flood_fills_for_provinces.clear();
-    for (auto& future : city_flood_fill_futures)
+    std::unordered_set<coordinate, coordinate::hash> all_bordered_unowned;
+    for (auto& future : city_owned_futures)
     {
-        finished_flood_fills.push_back(future.get());
+        finished_owned.push_back(future.get());
+        unordered_set_combine(all_bordered_unowned, finished_owned.back().empty_border);
     }
-    fill_vectormap_with_cheapest(provincial_vectormap, finished_flood_fills);
+    fill_vectormap_with_owned(provincial_vectormap, finished_owned);
     city_flood_fill_futures.clear();
-    for (city_flood_fill& third_pass : finished_flood_fills)
-    {
-        city_flood_fill_futures.push_back(pool.enqueue(third_flood_fill_gaps, std::ref(third_pass), provincial_vectormap, final_terrain_map, num_rows, num_columns));
-    }
-    for (auto& future : city_flood_fill_futures)
-    {
-        city_flood_fills_for_provinces.push_back(future.get());
-    }
-    fill_vectormap_with_cheapest(provincial_vectormap, city_flood_fills_for_provinces);
-
+    fill_gaps(provincial_vectormap, final_terrain_map, all_bordered_unowned);
     for (coordinate_edge city_edge : city_edges)
     {
         if (city_connections_not_draw.count(city_edge) == 0)
