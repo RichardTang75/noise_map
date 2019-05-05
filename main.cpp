@@ -94,6 +94,18 @@ void unordered_set_combine (std::unordered_set<T, H>& in1, std::unordered_set<T,
     }
 }
 
+template<typename T, typename A>
+void combine_2d_vector(std::vector<std::vector<T, A>>& in1, std::vector<std::vector<T, A>>& in2, int offset_x, int offset_y)
+{
+    for (int i=0; i<in2.size(); i++)
+    {
+        for (int j=0;j<in2[0].size(); j++)
+        {
+            in1[i+offset_x][j+offset_y] = in2[i][j];
+        }
+    }
+}
+
 void draw_line(std::vector<std::vector<double>>& in, int startx, int starty, int endx, int endy)
 {
     int dx = endx - startx;
@@ -729,21 +741,27 @@ void fill_vectormap_with_cheapest(std::vector<std::vector<double>>& provincial_v
     }
 }
 
-void fill_vectormap_with_owned(std::vector<std::vector<double>>& provincial_vectormap, std::vector<city_owned>& all_city_owned)
+void fill_vectormap_with_owned(std::vector<std::vector<double>>& provincial_vectormap,
+                               std::vector<std::vector<terrain>>& terrain_map,
+                               std::vector<city_owned>& all_city_owned)
 {
     for (int i=0; i<provincial_vectormap.size(); i++)
     {
         for (int j=0; j<provincial_vectormap[0].size(); j++)
         {
-            provincial_vectormap[i][j] = -1;
-            for (city_owned& one_city : all_city_owned)
+            provincial_vectormap[i][j] = -5;
+            if (terrain_map[i][j] != terrain::water)
             {
-                if (one_city.owned.count(coordinate{i, j}) > 0 )
+                for (city_owned& one_city : all_city_owned)
                 {
-                    provincial_vectormap[i][j] = one_city.number;
-                    break;
+                    if (one_city.owned.count(coordinate{i, j}) > 0 )
+                    {
+                        provincial_vectormap[i][j] = one_city.number;
+                        break;
+                    }
                 }
             }
+           
         }
     }
 }
@@ -1165,6 +1183,12 @@ void edge_elevation_gradient(std::vector<std::vector<double>>& ridge_vectormap, 
     }
 }
 
+//template<typename T, typename A>
+void free_vector(std::vector<city_flood_fill>& to_free)
+{
+    to_free.clear();
+}
+
 int main(int argc, const char * argv[])
 {
     int hard_conc = 1.5 * std::thread::hardware_concurrency();
@@ -1183,8 +1207,8 @@ int main(int argc, const char * argv[])
 //        injson >> elevation_json;
 //    }
     auto t1 = std::chrono::high_resolution_clock::now();
-    int num_rows = 512; //1536;
-    int num_columns = 512; //2560;
+    int num_rows = 1024; //1536;
+    int num_columns = 1024; //2560;
     std::vector<double> column(num_rows);
     std::vector<std::vector<double>> ridge_vectormap(num_columns, column);
     std::vector<std::vector<double>> moisture_vectormap(num_columns, column);
@@ -1433,14 +1457,18 @@ int main(int argc, const char * argv[])
         city_owned_futures.push_back(pool.enqueue(third_flood_fill_gaps, std::ref(second_pass),
                                                        provincial_vectormap, final_terrain_map, num_rows, num_columns));
     }
+    
     std::unordered_set<coordinate, coordinate::hash> all_bordered_unowned;
+    
     for (auto& future : city_owned_futures)
     {
         finished_owned.push_back(future.get());
         unordered_set_combine(all_bordered_unowned, finished_owned.back().empty_border);
     }
-    fill_vectormap_with_owned(provincial_vectormap, finished_owned);
-    city_flood_fill_futures.clear();
+    std::thread thread_1(free_vector, std::ref(city_flood_fills_for_provinces));
+    fill_vectormap_with_owned(provincial_vectormap, final_terrain_map, finished_owned);
+    
+
     fill_gaps(provincial_vectormap, final_terrain_map, all_bordered_unowned);
     for (coordinate_edge city_edge : city_edges)
     {
@@ -1449,7 +1477,6 @@ int main(int argc, const char * argv[])
             draw_line(provincial_vectormap, 0, 1, city_edge.p1.x, city_edge.p1.y, city_edge.p2.x, city_edge.p2.y);
         }
     }
-    
     double provincial_min, provincial_max;
     find_max_min_vectormap(provincial_vectormap, provincial_min, provincial_max);
     checkthis(provincial_vectormap, num_rows, num_columns, "ayoo9.png", provincial_min, provincial_max);
@@ -1464,6 +1491,7 @@ int main(int argc, const char * argv[])
         out_province << provinces << std::endl;
     }
     auto t2 = std::chrono::high_resolution_clock::now();
+    thread_1.join();
     std::cout<<"This all took: " << std::chrono::duration_cast<std::chrono::milliseconds>(t2-t1).count() << "milliseconds";
     return 0;
 }
