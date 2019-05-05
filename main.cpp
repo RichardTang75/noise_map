@@ -779,7 +779,7 @@ int query_nearby(const coordinate& location,
         for (int j=-1; j<2; j++)
         {
             checkin_out.emplace(coordinate{i, j});
-            if (abs(i+j)<2)
+            if (abs(i)+abs(j)<2)
             {
                 core.emplace(coordinate{i, j});
             }
@@ -788,10 +788,11 @@ int query_nearby(const coordinate& location,
     for (const coordinate& check_out : checkin_out)
     {
         coordinate next = coordinate{location.x+check_out.x, location.y+check_out.y};
-        if (provincial_vectormap[next.x][next.y] != -1)
+        if (provincial_vectormap[next.x][next.y] >= 0)
         {
-            int score = powf(5-abs(check_out.x + check_out.y),2);
-            number_and_score[provincial_vectormap[next.x][next.y]] += score;
+            int score = powf(3-abs(check_out.x) - abs(check_out.y),2);
+            int prov_num = provincial_vectormap[next.x][next.y];
+            number_and_score[prov_num] += score;
         }
         else
         {
@@ -829,6 +830,10 @@ void fill_gaps(std::vector<std::vector<double>>& provincial_vectormap,
     while (to_hit_up.size()>0)
     {
         coordinate next = to_hit_up.back();
+        if (next.x == 292 && next.y == 137)
+        {
+            std::cout<<"watup";
+        }
         to_hit_up.pop_back();
         if (terrain_map[next.x][next.y]!=terrain::water)
         {
@@ -1207,8 +1212,8 @@ int main(int argc, const char * argv[])
 //        injson >> elevation_json;
 //    }
     auto t1 = std::chrono::high_resolution_clock::now();
-    int num_rows = 1024; //1536;
-    int num_columns = 1024; //2560;
+    int num_rows = 512; //1536;
+    int num_columns = 512; //2560;
     std::vector<double> column(num_rows);
     std::vector<std::vector<double>> ridge_vectormap(num_columns, column);
     std::vector<std::vector<double>> moisture_vectormap(num_columns, column);
